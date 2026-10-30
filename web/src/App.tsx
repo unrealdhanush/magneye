@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { ThemeToggle } from './theme'
-import type { Anatomy, Answer, Failure, Ground, Playback, Scenario, Session } from './types'
+import type { Agent, AgentEvent, Anatomy, Failure, Ground, Playback, Scenario, Session, ViewerAction } from './types'
 import { StartScreen } from './ui/StartScreen'
 import { IconLayers, IconReset, IconXray } from './ui/icons'
 import {
-  AnswerCard, AskBar, FailureList, ObjectCard, PartDetail, PhotoMasks, Pipeline, ScenarioList,
-  type StageKey, type StageState,
+  AgentTrace, AskBar, Conversation, FailureList, ObjectCard, PartDetail, PhotoMasks, ScenarioList,
+  type TraceStep, type Turn,
 } from './ui/panels'
 import { Viewer } from './viewer/Viewer'
 
-const FRESH: Record<StageKey, StageState> = {
-  anatomy: { status: 'pending' }, ground: { status: 'pending' }, shell: { status: 'pending' }, answer: { status: 'pending' },
-}
 const sessionFromHash = () => location.hash.match(/^#\/s\/([a-z0-9]+)$/)?.[1] ?? null
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -67,8 +64,9 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const [anatomy, setAnatomy] = useState<Anatomy | null>(null)
   const [ground, setGround] = useState<Ground | null>(null)
   const [meshUrl, setMeshUrl] = useState<string | null>(null)
-  const [stages, setStages] = useState(FRESH)
-  const [answer, setAnswer] = useState<{ prompt: string; answer: Answer } | null>(null)
+  const [steps, setSteps] = useState<TraceStep[]>([])
+  const [turns, setTurns] = useState<Turn[]>([])
+  const [thinking, setThinking] = useState<Agent | null>(null)
   const [playback, setPlayback] = useState<Playback>({ kind: 'idle' })
   const [explode, setExplode] = useState(0)
   const [xray, setXray] = useState(false)
@@ -76,34 +74,53 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const [focusIds, setFocusIds] = useState<string[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const started = useRef(false)
-
-  const stage = (key: StageKey, value: StageState) => setStages(s => ({ ...s, [key]: value }))
+  // Latest anatomy/ground as streamed, readable after an await without waiting for a re-render.
+  const latest = useRef<{ anatomy: Anatomy | null; ground: Ground | null }>({ anatomy: null, ground: null })
 
   const play = (s: Scenario) => { setPlayback({ kind: 'scenario', scenario: s, startedAt: performance.now() }); setFocusIds([]) }
   const show = (f: Failure) => { setPlayback({ kind: 'failure', failure: f, startedAt: performance.now() }); setFocusIds([]); setSelectedId(null) }
 
-  const applyAnswer = useCallback((a: Answer, current: Anatomy) => {
-    const scenarios = a.new_scenario ? [...current.scenarios, a.new_scenario] : current.scenarios
-    const failures = a.new_failure ? [...current.failures, a.new_failure] : current.failures
-    if (a.new_scenario || a.new_failure) setAnatomy({ ...current, scenarios, failures })
-    const sc = scenarios.find(s => s.id === a.scenario_id)
-    const fl = failures.find(f => f.id === a.failure_id)
-    if (fl) show(fl)
-    else if (sc) play(sc)
-    else { setPlayback({ kind: 'idle' }); setFocusIds(a.focus_part_ids); setExplode(e => Math.max(e, 0.45)) }
+  const act = useCallback((a: ViewerAction) => {
+    if (a.type === 'highlight') { setPlayback({ kind: 'idle' }); setFocusIds(a.part_ids); setExplode(e => Math.max(e, 0.45)) }
+    else if (a.type === 'play_scenario') play(a.scenario)
+    else if (a.type === 'show_failure') show(a.failure)
+    else if (a.type === 'explode') setExplode(a.amount)
   }, [])
 
-  const ask = useCallback(async (prompt: string, current: Anatomy) => {
-    stage('answer', { status: 'running' })
-    try {
-      const a = await api.ask(sid, prompt)
-      setAnswer({ prompt, answer: a })
-      applyAnswer(a, current)
-      stage('answer', { status: 'done', detail: a.intent === 'symptom' ? 'Diagnosed a likely culprit' : a.intent === 'scenario' ? 'Playing a scenario' : 'Answered' })
-    } catch (e) { stage('answer', { status: 'error', detail: message(e) }) }
-  }, [sid, applyAnswer])
+  /** Fold one agent event into the trace, the conversation and the viewer. `live` is false when replaying a saved trace. */
+  const onEvent = useCallback((e: AgentEvent, live = true) => {
+    switch (e.type) {
+      case 'step':
+        setThinking(null)
+        setSteps(prev => {
+          const i = prev.findLastIndex(st => st.status === 'running' && st.agent === e.agent && st.tool === e.tool)
+          const next = { agent: e.agent, tool: e.tool, status: e.status, text: e.text }
+          if (i >= 0 && e.status !== 'running') return prev.map((st, j) => (j === i ? next : st))
+          return [...prev, next]
+        })
+        if (e.status !== 'running' && live) setThinking(e.tool === 'ground' || e.tool === 'finish' ? null : e.agent)
+        break
+      case 'thought': break
+      case 'user': setTurns(t => [...t, { role: 'user', text: e.text }]); break
+      case 'question': setThinking(null); setTurns(t => [...t, { role: 'question', text: e.text, options: e.options }]); break
+      case 'answer': setThinking(null); setTurns(t => [...t, { role: 'answer', text: e.text }]); break
+      case 'anatomy': latest.current.anatomy = e.anatomy; setAnatomy(e.anatomy); break
+      case 'ground': latest.current.ground = e.ground; setGround(e.ground); break
+      case 'action': if (live) act(e.action); break
+      case 'error': setThinking(null); setSteps(prev => [...prev, { agent: 'guide', tool: 'error', status: 'error', text: e.message }]); break
+      case 'done': setThinking(null); break
+    }
+  }, [act])
 
-  // Run whichever stages this session has not finished yet.
+  const [asking, setAsking] = useState(false)
+  const ask = useCallback(async (prompt: string) => {
+    setAsking(true); setThinking('guide')
+    try { await api.ask(sid, prompt, e => onEvent(e)) }
+    catch (err) { onEvent({ type: 'error', message: message(err) }) }
+    setAsking(false); setThinking(null)
+  }, [sid, onEvent])
+
+  // Load the session, replay its saved trace, then run whatever the agents have not done yet.
   useEffect(() => {
     if (started.current) return
     started.current = true
@@ -111,40 +128,29 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
       let s: Session
       try { s = await api.session(sid) } catch (e) { setLoadError(message(e)); return }
       setSession(s)
-      let a = s.anatomy, g = s.ground
-      if (a) stage('anatomy', { status: 'done', detail: a.object.name })
-      else {
-        stage('anatomy', { status: 'running' })
-        try { a = await api.anatomy(sid); stage('anatomy', { status: 'done', detail: `${a.object.name} · ${a.parts.length} parts` }) }
-        catch (e) { stage('anatomy', { status: 'error', detail: message(e) }); return }
+      s.trace.forEach(e => onEvent(e, false))
+      if (!s.anatomy || !s.ground) {
+        setThinking('builder')
+        try { await api.build(sid, e => onEvent(e)) } catch (e) { onEvent({ type: 'error', message: message(e) }) }
+        setThinking(null)
+      } else {
+        onEvent({ type: 'anatomy', anatomy: s.anatomy }, false)
+        onEvent({ type: 'ground', ground: s.ground }, false)
       }
-      setAnatomy(a)
-      if (g) stage('ground', { status: 'done', detail: `${Object.keys(g.parts).length} parts grounded` })
-      else {
-        stage('ground', { status: 'running' })
-        try {
-          const r = await api.ground(sid)
-          a = r.anatomy; g = r.ground
-          setAnatomy(a)
-          stage('ground', { status: g.object ? 'done' : 'error', detail: g.object ? `${Object.keys(g.parts).length} visible parts grounded` : 'Object not found in photo; showing inferred layout' })
-        } catch (e) { stage('ground', { status: 'error', detail: message(e) }) }
-      }
-      setGround(g)
+      if (!latest.current.anatomy) return
       // The photo pops out as a 3D shell, then opens up.
-      setTimeout(() => setExplode(0.55), 900)
+      setTimeout(() => setExplode(e => Math.max(e, 0.55)), 900)
 
-      if (s.has_mesh) { setMeshUrl(`/api/sessions/${sid}/shell.glb`); stage('shell', { status: 'done', detail: 'Mesh loaded' }) }
-      else if (sam3d && g?.object) {
-        stage('shell', { status: 'running' })
+      if (s.has_mesh) setMeshUrl(`/api/sessions/${sid}/shell.glb`)
+      else if (sam3d && latest.current.ground?.object) {
+        onEvent({ type: 'step', agent: 'builder', tool: 'shell', status: 'running' })
         api.reconstruct(sid)
-          .then(r => { setMeshUrl(r.mesh_url); stage('shell', { status: 'done', detail: 'Mesh replaced the extruded silhouette' }) })
-          .catch(e => stage('shell', { status: 'error', detail: message(e) }))
-      } else stage('shell', { status: 'skipped', detail: g?.object ? 'Using the photo silhouette shell' : 'Needs an object mask' })
-
-      if (s.prompt.trim()) await ask(s.prompt, a)
-      else stage('answer', { status: 'skipped', detail: 'No prompt given' })
+          .then(r => { setMeshUrl(r.mesh_url); onEvent({ type: 'step', agent: 'builder', tool: 'shell', status: 'done', text: 'SAM 3D mesh replaced the extruded silhouette' }) })
+          .catch(e => onEvent({ type: 'step', agent: 'builder', tool: 'shell', status: 'error', text: message(e) }))
+      }
+      if (s.prompt.trim() && !s.trace.some(e => e.type === 'user')) await ask(s.prompt)
     })()
-  }, [sid, sam3d, ask])
+  }, [sid, sam3d, ask, onEvent])
 
   if (loadError) return <p role="alert" className="mt-3 text-body text-red-text">⚠ {loadError}</p>
   if (!session) return null
@@ -157,7 +163,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
     <div className="grid gap-2 pt-2 lg:grid-cols-[320px_minmax(0,1fr)_360px]">
       <aside className="order-2 space-y-2 lg:order-1" aria-label="Input and pipeline">
         <PhotoMasks imageUrl={session.image_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
-        <Pipeline stages={stages} />
+        <AgentTrace steps={steps} thinking={thinking} />
         {anatomy && anatomy.caveats.length > 0 && (
           <details className="rounded-md bg-card p-1.5 text-footnote text-muted shadow-ring">
             <summary className="cursor-pointer text-ink">What Magneye isn’t sure about</summary>
@@ -201,9 +207,8 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
 
       <aside className="order-3 space-y-3" aria-label="Object, answers and scenarios">
         {anatomy && <ObjectCard anatomy={anatomy} />}
-        <AskBar disabled={!anatomy || stages.answer.status === 'running'} onAsk={q => anatomy && ask(q, anatomy)}
-          onTranscribe={async wav => (await api.transcribe(wav)).text} />
-        {answer && <AnswerCard prompt={answer.prompt} answer={answer.answer} />}
+        <Conversation turns={turns} busy={asking} onReply={ask} />
+        <AskBar disabled={!anatomy || asking} onAsk={ask} onTranscribe={async wav => (await api.transcribe(wav)).text} />
         {selected && <PartDetail part={selected} onClose={() => setSelectedId(null)} />}
         {anatomy && <ScenarioList scenarios={anatomy.scenarios} activeId={activeScenario} onPlay={play} />}
         {anatomy && <FailureList failures={anatomy.failures} parts={anatomy.parts} activeId={activeFailure} onShow={show} />}

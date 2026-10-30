@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+from dataclasses import dataclass
 from typing import Any
 
 from PIL import Image
@@ -11,6 +12,49 @@ from PIL import Image
 from . import meta
 
 MAX_PHRASES = 10
+
+Matches = list[dict[str, Any]]
+
+
+class SegmentCache:
+    """SAM 3.1 results per phrase for one photo, shared by the builder agent and final grounding."""
+
+    def __init__(self, image: bytes) -> None:
+        self.image = image
+        self._results: dict[str, Matches | Exception] = {}
+
+    async def get(self, phrase: str) -> Matches | Exception:
+        key = phrase.strip().lower()
+        if key not in self._results:
+            try:
+                self._results[key] = await meta.segment(self.image, phrase)
+            except Exception as e:  # one failed phrase should not sink a whole grounding pass
+                self._results[key] = e
+        return self._results[key]
+
+
+@dataclass
+class Frame:
+    """Maps between photo pixels and the object's millimetre frame (photo = front view, +y up)."""
+
+    box: list[float]
+    dims: list[float]
+
+    def to_px(self, x_mm: float, y_mm: float) -> tuple[float, float]:
+        ow, oh = self.box[2] - self.box[0], self.box[3] - self.box[1]
+        return self.box[0] + (x_mm / self.dims[0] + 0.5) * ow, self.box[1] + (0.5 - y_mm / self.dims[1]) * oh
+
+    def to_mm(self, px: float, py: float) -> tuple[float, float]:
+        ow, oh = self.box[2] - self.box[0], self.box[3] - self.box[1]
+        return ((px - self.box[0]) / ow - 0.5) * self.dims[0], (0.5 - (py - self.box[1]) / oh) * self.dims[1]
+
+    def box_to_mm(self, box: list[float]) -> dict[str, list[float]]:
+        """A pixel box as centre and size in millimetres (x, y only)."""
+        cx, cy = self.to_mm((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+        ow, oh = self.box[2] - self.box[0], self.box[3] - self.box[1]
+        w = (box[2] - box[0]) / ow * self.dims[0]
+        h = (box[3] - box[1]) / oh * self.dims[1]
+        return {"center_mm": [round(cx, 1), round(cy, 1)], "size_mm": [round(w, 1), round(h, 1)]}
 
 
 def _center(box: list[float]) -> tuple[float, float]:
@@ -21,37 +65,42 @@ def _inside(point: tuple[float, float], box: list[float]) -> bool:
     return box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3]
 
 
-async def _safe_segment(image: bytes, phrase: str) -> list[dict[str, Any]] | Exception:
-    try:
-        return await meta.segment(image, phrase)
-    except Exception as e:  # one failed phrase should not sink the whole grounding pass
-        return e
+def pick_object(matches: Matches) -> dict[str, Any]:
+    """The biggest confident match is the object itself (smaller matches are usually reflections or parts)."""
+    return max(matches, key=lambda m: (m["confidence"] or 0.5) * m["coverage"] * _area(m["box"]))
 
 
-async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any]) -> dict[str, Any]:
+async def object_frame(cache: SegmentCache, anatomy: dict[str, Any]) -> tuple[Frame, dict[str, Any]] | None:
+    matches = await cache.get(anatomy["object"]["sam_prompt"])
+    if isinstance(matches, Exception) or not matches:
+        return None
+    target = pick_object(matches)
+    return Frame(target["box"], anatomy["object"]["dimensions_mm"]), target
+
+
+def part_matches(frame: Frame, target: dict[str, Any], matches: Matches) -> Matches:
+    """Matches whose centre lies on the object, excluding the object's own mask."""
+    return [m for m in matches if _inside(_center(m["box"]), frame.box) and m["box"] != target["box"]]
+
+
+async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any],
+                 cache: SegmentCache | None = None) -> dict[str, Any]:
     """Segment the object and its visible parts, then move visible parts to where SAM found them.
 
     Mutates `anatomy` in place (center/size of grounded parts) and returns the masks for the viewer,
     plus the object's full-frame mask as PNG bytes under "object_mask_png" (None if not found).
     """
+    cache = cache or SegmentCache(image)
     obj = anatomy["object"]
     visible = [p for p in anatomy["parts"] if p.get("sam_prompt")]
     phrases = list(dict.fromkeys([obj["sam_prompt"], *(p["sam_prompt"] for p in visible)]))[:MAX_PHRASES]
-    results = dict(zip(phrases, await asyncio.gather(*(_safe_segment(image, ph) for ph in phrases))))
+    results = dict(zip(phrases, await asyncio.gather(*(cache.get(ph) for ph in phrases))))
 
     errors = {ph: str(r) for ph, r in results.items() if isinstance(r, Exception)}
-    object_matches = results.get(obj["sam_prompt"])
-    if isinstance(object_matches, Exception) or not object_matches:
+    found = await object_frame(cache, anatomy)
+    if found is None:
         return {"image_size": size, "object": None, "parts": {}, "errors": errors, "object_mask_png": None}
-
-    # The biggest confident match is the object itself (smaller matches are usually reflections or parts).
-    target = max(object_matches, key=lambda m: (m["confidence"] or 0.5) * m["coverage"] * _area(m["box"]))
-    box = target["box"]
-    ow, oh = box[2] - box[0], box[3] - box[1]
-    dw, dh, _ = obj["dimensions_mm"]
-
-    def to_px(center_mm: list[float]) -> tuple[float, float]:
-        return box[0] + (center_mm[0] / dw + 0.5) * ow, box[1] + (0.5 - center_mm[1] / dh) * oh
+    frame, target = found
 
     grounded: dict[str, Any] = {}
     taken: set[tuple[str, str]] = set()
@@ -59,24 +108,18 @@ async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any]) -
         matches = results.get(part["sam_prompt"])
         if isinstance(matches, Exception) or not matches:
             continue
-        expected = to_px(part["center_mm"])
-        candidates = [
-            m for m in matches
-            if _inside(_center(m["box"]), box) and (part["sam_prompt"], m["object_id"]) not in taken
-            and m["box"] != target["box"]
-        ]
+        expected = frame.to_px(part["center_mm"][0], part["center_mm"][1])
+        candidates = [m for m in part_matches(frame, target, matches) if (part["sam_prompt"], m["object_id"]) not in taken]
         if not candidates:
             continue
         best = min(candidates, key=lambda m: _dist(_center(m["box"]), expected))
         taken.add((part["sam_prompt"], best["object_id"]))
-        cx, cy = _center(best["box"])
-        part["center_mm"][0] = round(((cx - box[0]) / ow - 0.5) * dw, 1)
-        part["center_mm"][1] = round((0.5 - (cy - box[1]) / oh) * dh, 1)
-        bw = (best["box"][2] - best["box"][0]) / ow * dw
-        bh = (best["box"][3] - best["box"][1]) / oh * dh
+        mm = frame.box_to_mm(best["box"])
+        part["center_mm"][0], part["center_mm"][1] = mm["center_mm"]
+        bw, bh = mm["size_mm"]
         # Only trust SAM's extent when it is in the same ballpark as Wonder's estimate (rotated parts skew boxes).
         if 0.33 < bw / max(part["size_mm"][0], 0.1) < 3 and 0.33 < bh / max(part["size_mm"][1], 0.1) < 3:
-            part["size_mm"][0], part["size_mm"][1] = round(bw, 1), round(bh, 1)
+            part["size_mm"][0], part["size_mm"][1] = bw, bh
         part["grounded"] = True
         grounded[part["id"]] = {"box": best["box"], "confidence": best["confidence"], "mask_svg": best["mask_svg"],
                                 "mask_bounds": best["mask_bounds"], "mask_size": best["mask_size"]}

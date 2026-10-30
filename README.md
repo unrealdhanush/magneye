@@ -6,17 +6,31 @@ Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026).
 
 ## How it works
 
-| Stage | Model | What it does |
-|---|---|---|
-| Identify & infer internals | **Muse Wonder** (`muse-wonder-1.0`) | Looks at the photo and returns structured anatomy as JSON: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes |
-| Ground in the photo | **SAM 3.1** (`sam-3.1`) | Segments the whole object and each part Wonder says is visible. Visible parts snap to where SAM actually found them, and the object mask becomes the 3D shell's silhouette |
-| Reconstruct the shell | **SAM 3D Objects** (open weights, on Modal) | Optional. Turns the photo and object mask into a 3D mesh that replaces the extruded silhouette |
-| Answer prompts | **Muse Wonder** | Answers each prompt using only the anatomy above. It picks a scenario to play or a failure to diagnose, and can write a new one using the existing parts |
-| Voice | **Muse Voice Transcribe** | Push-to-talk questions |
+Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step to the UI's agent trace.
 
-The viewer (React + three.js) starts with the photo extruded into 3D. Pulling it apart reveals the inferred internals. Scenarios animate the chain of parts, with a signal pulse running between them. Failures lift off the parts in the way, outermost first, then pulse the culprit.
+**Builder agent:** turns the photo into a verified anatomy.
 
-Hidden parts are inferred, not measured. The UI marks each part as either "seen in photo · SAM 3.1" or "hidden · inferred", and lists Wonder's caveats.
+1. Drafts the anatomy as JSON: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes.
+2. Verifies the draft with its tools:
+   - `find_in_photo` runs **SAM 3.1** on a noun phrase. It confirms each part the draft calls visible, reports where the part really is in the object's millimetre frame, and catches parts the draft imagined.
+   - `check_geometry` flags parts outside the object, internal parts that share the same space, and removal orders that dig outward.
+   - `view_layout` draws the agent's own layout over the photo so it can see what's off.
+3. Fixes problems with `update_part`, `add_part` and `remove_part`, then calls `finish`. A final SAM 3.1 pass grounds the visible parts. The object mask becomes the 3D shell, extruded with the photo projected onto it.
+
+**Guide agent:** answers prompts by driving the 3D viewer.
+
+- `highlight`, `play_scenario` / `create_scenario`, `show_failure` / `create_failure` and `set_explode` control the viewer.
+- `look_closer` crops the photo around a part.
+- `ask_user` asks a single question when a symptom fits more than one fault. The question appears in the conversation with tap-to-answer options, and the conversation resumes on the user's reply.
+
+| Model | Used for |
+|---|---|
+| **Muse Wonder** | Both agents |
+| **SAM 3.1** | Builder verification, grounding, the guide's close-ups |
+| **SAM 3D Objects** (open weights, on Modal) | Optional 3D mesh that replaces the extruded silhouette |
+| **Muse Voice Transcribe** | Push-to-talk questions |
+
+The viewer (React + three.js) shows scenarios as a chain of parts with a signal pulse running between them. For failures, it lifts off the parts in the way, outermost first, then pulses the culprit red. Hidden parts are inferred, not measured. Each part is marked either "seen in photo · SAM 3.1" or "hidden · inferred".
 
 ## Run it
 
@@ -45,8 +59,8 @@ uv run python tests/fixtures/make_ui_session.py   # stand-in session at /#/s/uif
 ## Layout
 
 ```
-src/magneye/   FastAPI app, Meta Model API client, anatomy prompts/schemas, SAM grounding
+src/magneye/   FastAPI app, Meta Model API client, agent loop, builder + guide agents, checks, SAM grounding
 web/           React + three.js viewer
 gpu/           SAM 3D Objects endpoint for Modal
-tests/         Backend tests and a UI fixture session
+tests/         Backend + agent tests (scripted fake model) and a UI fixture session
 ```

@@ -78,6 +78,35 @@ async def chat_json(
         raise MetaAPIError(f"{model} did not return valid JSON: {text[:300]}") from e
 
 
+def image_part(jpeg: bytes) -> dict[str, Any]:
+    return {"type": "image_url", "image_url": {"url": data_url(jpeg), "detail": "high"}}
+
+
+async def chat(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    reasoning_effort: str = "medium",
+    max_tokens: int = 8000,
+) -> dict[str, Any]:
+    """One Chat Completions turn with tools. Returns the assistant message (content and/or tool_calls)."""
+    body = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "reasoning_effort": reasoning_effort,
+        "max_completion_tokens": max_tokens,
+    }
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=body)
+    if r.status_code >= 400:
+        raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
+    return r.json()["choices"][0]["message"]
+
+
 async def segment(image_jpeg: bytes, phrase: str) -> list[dict[str, Any]]:
     """SAM 3.1 text-prompted segmentation of one noun phrase.
 

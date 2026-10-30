@@ -1,4 +1,4 @@
-"""Prompts and JSON schemas for Muse Wonder: infer an object's anatomy, then answer prompts about it."""
+"""Prompt and JSON schema for Muse Wonder's first draft of an object's anatomy, plus reference sanitizing."""
 
 from __future__ import annotations
 
@@ -114,36 +114,8 @@ Failures (2 to 5): realistic failure modes for this exact kind of object. culpri
 
 Be honest: do not invent precise specs you do not know. Put uncertainty in caveats. Output only JSON matching the schema."""
 
-ANSWER_SCHEMA = _obj(
-    {
-        "intent": {"type": "string", "enum": ["explain", "scenario", "symptom", "locate", "disassemble", "other"]},
-        "text": _str,
-        "focus_part_ids": _ids,
-        "scenario_id": {"type": ["string", "null"]},
-        "failure_id": {"type": ["string", "null"]},
-        "new_scenario": {"anyOf": [SCENARIO, {"type": "null"}]},
-        "new_failure": {"anyOf": [FAILURE, {"type": "null"}]},
-    }
-)
-
-ANSWER_SYSTEM = """You are Magneye's voice. You answer prompts about one object whose anatomy (parts, connections, scenarios, failures) is given as JSON. The user is looking at an interactive 3D exploded view of it.
-
-Rules:
-- Ground every answer in the anatomy. Only use part_ids that exist in it.
-- intent "scenario": the user wants to see how something works. Set scenario_id to an existing scenario, or if none fits, write new_scenario (unique id) using existing part_ids.
-- intent "symptom": the user describes a problem. Set failure_id to the best existing failure, or write new_failure (unique id) using existing part_ids, with access_path listing the parts to remove outermost first.
-- intent "locate" / "explain" / "disassemble": set focus_part_ids to the parts to highlight.
-- text: at most 70 words, plain and direct, spoken like a calm expert. Say what is happening and why. If the anatomy is uncertain about something, say so briefly.
-Output only JSON matching the schema."""
-
-
 def anatomy_user_text(prompt: str) -> str:
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}\n\nReconstruct this object's anatomy."
-
-
-def answer_user_text(anatomy_json: str, prompt: str, history: list[str]) -> str:
-    prior = "\n".join(f"- {h}" for h in history[-6:]) or "(none)"
-    return f"Anatomy JSON:\n{anatomy_json}\n\nEarlier prompts this session:\n{prior}\n\nUser prompt: {prompt.strip()}"
 
 
 def sanitize(anatomy: dict[str, Any]) -> dict[str, Any]:
@@ -157,19 +129,3 @@ def sanitize(anatomy: dict[str, Any]) -> dict[str, Any]:
         f["access_path"] = [pid for pid in f["access_path"] if pid in ids]
     anatomy["failures"] = [f for f in anatomy.get("failures", []) if f["culprit_part_id"] in ids]
     return anatomy
-
-
-def sanitize_answer(answer: dict[str, Any], anatomy: dict[str, Any]) -> dict[str, Any]:
-    ids = {p["id"] for p in anatomy["parts"]}
-    answer["focus_part_ids"] = [pid for pid in answer.get("focus_part_ids", []) if pid in ids]
-    if answer.get("new_scenario"):
-        merged = sanitize({"parts": anatomy["parts"], "scenarios": [answer["new_scenario"]]})
-        answer["new_scenario"] = merged["scenarios"][0] if merged["scenarios"] else None
-    if answer.get("new_failure"):
-        merged = sanitize({"parts": anatomy["parts"], "failures": [answer["new_failure"]]})
-        answer["new_failure"] = merged["failures"][0] if merged["failures"] else None
-    if answer.get("scenario_id") not in {s["id"] for s in anatomy["scenarios"]}:
-        answer["scenario_id"] = None
-    if answer.get("failure_id") not in {f["id"] for f in anatomy["failures"]}:
-        answer["failure_id"] = None
-    return answer

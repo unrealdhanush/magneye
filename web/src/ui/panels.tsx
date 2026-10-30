@@ -1,48 +1,76 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ThinkingOrb, type OrbState } from 'thinking-orbs'
 import { startRecording, type Recorder } from '../audio'
-import type { Anatomy, Answer, Failure, Ground, Part, Scenario } from '../types'
+import type { Agent, Anatomy, Failure, Ground, Part, Scenario } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
 import { IconArrow, IconCheck, IconMic, IconPlay, IconStop, IconWarn } from './icons'
 
-export type StageKey = 'anatomy' | 'ground' | 'shell' | 'answer'
-export type StageStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped'
-export interface StageState { status: StageStatus; detail?: string }
+/** One row of the agent trace: a tool call with its live status. */
+export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'done' | 'error'; text?: string }
 
-const STAGES: { key: StageKey; title: string; model: string; orb: OrbState; running: string }[] = [
-  { key: 'anatomy', title: 'Identify & infer internals', model: 'Muse Wonder', orb: 'solving', running: 'Reasoning about what’s inside…' },
-  { key: 'ground', title: 'Find parts in the photo', model: 'SAM 3.1', orb: 'searching', running: 'Segmenting the object and visible parts…' },
-  { key: 'shell', title: 'Reconstruct the shell', model: 'SAM 3D Objects', orb: 'shaping', running: 'Building a 3D mesh from the photo…' },
-  { key: 'answer', title: 'Answer your prompt', model: 'Muse Wonder', orb: 'composing', running: 'Writing the answer…' },
-]
+const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }> = {
+  draft: { label: 'Draft anatomy', model: 'Muse Wonder', orb: 'solving' },
+  cache: { label: 'Reuse anatomy', model: 'cache', orb: 'working' },
+  find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },
+  check_geometry: { label: 'Check the geometry', model: 'checks', orb: 'solving' },
+  view_layout: { label: 'Review layout', model: 'Muse Wonder', orb: 'shaping' },
+  update_part: { label: 'Revise a part', model: 'Muse Wonder', orb: 'shaping' },
+  add_part: { label: 'Add a missed part', model: 'Muse Wonder', orb: 'shaping' },
+  remove_part: { label: 'Remove a part', model: 'Muse Wonder', orb: 'shaping' },
+  finish: { label: 'Verified', model: 'Muse Wonder', orb: 'working' },
+  ground: { label: 'Ground visible parts', model: 'SAM 3.1', orb: 'searching' },
+  shell: { label: 'Reconstruct the shell', model: 'SAM 3D', orb: 'shaping' },
+  highlight: { label: 'Point at parts', model: 'viewer', orb: 'working' },
+  play_scenario: { label: 'Play a scenario', model: 'viewer', orb: 'working' },
+  create_scenario: { label: 'Write a scenario', model: 'Muse Wonder', orb: 'composing' },
+  show_failure: { label: 'Show the fault', model: 'viewer', orb: 'working' },
+  create_failure: { label: 'Write a diagnosis', model: 'Muse Wonder', orb: 'composing' },
+  set_explode: { label: 'Open it up', model: 'viewer', orb: 'working' },
+  look_closer: { label: 'Look closer', model: 'SAM 3.1', orb: 'searching' },
+  ask_user: { label: 'Ask you', model: 'Muse Wonder', orb: 'composing' },
+  limit: { label: 'Turn limit', model: 'agent', orb: 'working' },
+  verify: { label: 'Verify', model: 'Muse Wonder', orb: 'solving' },
+}
 
-export function Pipeline({ stages }: { stages: Record<StageKey, StageState> }) {
+const AGENT_TONE: Record<Agent, string> = { builder: 'bg-indigo/10 text-indigo-text', guide: 'bg-teal/10 text-teal-text' }
+
+export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: Agent | null }) {
+  const list = useRef<HTMLOListElement>(null)
+  // Keep the newest step in view as agents work.
+  useEffect(() => { list.current?.scrollTo({ top: list.current.scrollHeight }) }, [steps.length, thinking])
   return (
-    <ol className="space-y-1" aria-label="Pipeline">
-      {STAGES.map(s => {
-        const st = stages[s.key]
-        return (
-          <li key={s.key} className="flex items-start gap-1.5 rounded-md bg-card p-1.5 shadow-ring">
-            <span className="grid h-3 w-3 shrink-0 place-items-center pt-px">
-              {st.status === 'running' ? <ThinkingOrb state={s.orb} size={20} aria-hidden="true" />
-                : st.status === 'done' ? <IconCheck className="h-2.5 w-2.5 text-green-text" />
-                : st.status === 'error' ? <IconWarn className="h-2.5 w-2.5 text-red-text" />
-                : <span className={`h-1 w-1 rounded-full ${st.status === 'skipped' ? 'bg-muted/40' : 'bg-muted'}`} />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex items-baseline justify-between gap-1">
-                <span className="text-subheadline font-medium text-ink">{s.title}</span>
-                <span className="shrink-0 font-mono text-caption2 uppercase tracking-wider text-muted">{s.model}</span>
+    <section aria-labelledby="trace-title" className="space-y-1">
+      <h2 id="trace-title" className="text-headline text-ink">Agent trace</h2>
+      <ol ref={list} className="max-h-[384px] space-y-px overflow-y-auto rounded-md bg-card p-1 shadow-ring" aria-live="polite">
+        {steps.map((st, i) => {
+          const meta = TOOL_LABEL[st.tool] ?? { label: st.tool, model: '', orb: 'working' as OrbState }
+          return (
+            <li key={i} className="flex items-start gap-1 rounded-sm px-1 py-1 hover:bg-ink/5">
+              <span className="grid h-2.5 w-2.5 shrink-0 place-items-center pt-px">
+                {st.status === 'running' ? <ThinkingOrb state={meta.orb} size={20} aria-hidden="true" />
+                  : st.status === 'done' ? <IconCheck className="h-2 w-2 text-green-text" />
+                  : <IconWarn className="h-2 w-2 text-red-text" />}
               </span>
-              <span role={st.status === 'running' ? 'status' : undefined}
-                className={`block text-footnote ${st.status === 'error' ? 'text-red-text' : 'text-muted'}`}>
-                {st.status === 'running' ? s.running : st.detail ?? (st.status === 'pending' ? 'Waiting' : st.status === 'skipped' ? 'Skipped' : '')}
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-1">
+                  <span className={`shrink-0 rounded-full px-1 font-mono text-caption2 leading-4 ${AGENT_TONE[st.agent]}`}>{st.agent}</span>
+                  <span className="truncate text-footnote font-medium text-ink">{meta.label}</span>
+                  <span className="ms-auto shrink-0 font-mono text-caption2 uppercase tracking-wider text-muted">{meta.model}</span>
+                </span>
+                {st.text && <span className={`block text-caption ${st.status === 'error' ? 'text-red-text' : 'text-muted'}`}>{st.text}</span>}
               </span>
-            </span>
+            </li>
+          )
+        })}
+        {thinking && (
+          <li className="flex items-center gap-1 px-1 py-1" role="status">
+            <ThinkingOrb state="solving" size={20} aria-hidden="true" />
+            <span className="text-footnote text-muted">{thinking === 'builder' ? 'Builder is thinking…' : 'Guide is thinking…'}</span>
           </li>
-        )
-      })}
-    </ol>
+        )}
+        {!steps.length && !thinking && <li className="px-1 py-1 text-footnote text-muted">Waiting to start</li>}
+      </ol>
+    </section>
   )
 }
 
@@ -152,11 +180,29 @@ export function AskBar({ disabled, onAsk, onTranscribe }: { disabled: boolean; o
   )
 }
 
-export function AnswerCard({ answer, prompt }: { answer: Answer; prompt: string }) {
+export type Turn = { role: 'user' | 'answer' | 'question'; text: string; options?: string[] }
+
+export function Conversation({ turns, onReply, busy }: { turns: Turn[]; onReply: (text: string) => void; busy: boolean }) {
+  if (!turns.length) return null
+  const last = turns[turns.length - 1]
   return (
-    <section aria-label="Answer" className="glass edge space-y-1 rounded-lg p-2">
-      <p className="font-mono text-caption text-muted">“{prompt}”</p>
-      <p className="text-body text-ink">{answer.text}</p>
+    <section aria-label="Conversation with the guide" className="space-y-1">
+      {turns.map((t, i) => t.role === 'user' ? (
+        <p key={i} className="ms-4 rounded-md bg-accent/10 px-1.5 py-1 text-callout text-ink">{t.text}</p>
+      ) : (
+        <div key={i} className={`glass edge space-y-1 rounded-lg p-1.5 ${t.role === 'question' ? 'me-2' : ''}`}>
+          <p className="font-mono text-caption2 uppercase tracking-wider text-muted">{t.role === 'question' ? 'Guide asks' : 'Guide'}</p>
+          <p className="text-body text-ink">{t.text}</p>
+          {t.role === 'question' && t === last && !!t.options?.length && (
+            <div className="flex flex-wrap gap-1">
+              {t.options.map(o => (
+                <button key={o} type="button" disabled={busy} onClick={() => onReply(o)}
+                  className="press min-h-tap rounded-full bg-accent/10 px-1.5 text-footnote text-accent-text hover:bg-accent/15 disabled:opacity-40">{o}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </section>
   )
 }

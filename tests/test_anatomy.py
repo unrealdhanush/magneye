@@ -30,14 +30,6 @@ def test_sanitize_drops_dangling_references():
     assert [f["id"] for f in out["failures"]] == ["f1"] and out["failures"][0]["access_path"] == ["a"]
 
 
-def test_sanitize_answer_keeps_only_known_ids():
-    anatomy = {"parts": [_part("a")], "scenarios": [{"id": "s1", "title": "", "summary": "", "steps": []}], "failures": []}
-    answer = {"intent": "locate", "text": "", "focus_part_ids": ["a", "nope"], "scenario_id": "zzz", "failure_id": "f9",
-              "new_scenario": None, "new_failure": None}
-    out = A.sanitize_answer(answer, anatomy)
-    assert out["focus_part_ids"] == ["a"] and out["scenario_id"] is None and out["failure_id"] is None
-
-
 def test_ground_snaps_visible_part_to_sam_box(monkeypatch):
     # Object spans pixels 100..300 x 100..500 and is 100 x 200 mm, so 2 px per mm.
     anatomy = {"object": {"sam_prompt": "controller", "dimensions_mm": [100, 200, 50]},

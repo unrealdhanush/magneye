@@ -71,25 +71,37 @@ export interface Ground {
   errors: Record<string, string>
 }
 
-export interface Answer {
-  intent: 'explain' | 'scenario' | 'symptom' | 'locate' | 'disassemble' | 'other'
-  text: string
-  focus_part_ids: string[]
-  scenario_id: string | null
-  failure_id: string | null
-  new_scenario: Scenario | null
-  new_failure: Failure | null
-}
+export type Agent = 'builder' | 'guide'
+
+/** A viewer command the guide agent issues. */
+export type ViewerAction =
+  | { type: 'highlight'; part_ids: string[] }
+  | { type: 'play_scenario'; scenario: Scenario; created?: boolean }
+  | { type: 'show_failure'; failure: Failure; created?: boolean }
+  | { type: 'explode'; amount: number }
+
+/** Events streamed by the builder and guide agents. */
+export type AgentEvent =
+  | { type: 'user'; text: string }
+  | { type: 'step'; agent: Agent; tool: string; status: 'running' | 'done' | 'error'; text?: string }
+  | { type: 'thought'; agent: Agent; text: string }
+  | { type: 'anatomy'; anatomy: Anatomy }
+  | { type: 'ground'; ground: Ground }
+  | { type: 'action'; action: ViewerAction }
+  | { type: 'question'; text: string; options: string[] }
+  | { type: 'answer'; text: string }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
 
 export interface Session {
   id: string
   image_url: string
   size: [number, number]
   prompt: string
-  history: string[]
   anatomy: Anatomy | null
   ground: Ground | null
   has_mesh: boolean
+  trace: AgentEvent[]
 }
 
 /** What the viewer is currently acting out. */

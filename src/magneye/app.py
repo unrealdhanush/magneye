@@ -2,25 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import anatomy as A
-from . import meta
-from .ground import ground
+from . import guide, meta
+from .agent import Emit
+from .builder import build
+from .ground import SegmentCache, ground
 
 load_dotenv()
 
@@ -86,8 +89,7 @@ async def create_session(image: UploadFile = File(...), prompt: str = Form("")) 
     d = DATA / "sessions" / sid
     d.mkdir(parents=True)
     (d / "image.jpg").write_bytes(jpeg)
-    _write_json(d / "session.json", {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest(),
-                                     "history": []})
+    _write_json(d / "session.json", {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest()})
     return {"id": sid, "image_url": f"/api/sessions/{sid}/image.jpg", "size": size, "prompt": prompt}
 
 
@@ -100,54 +102,84 @@ def session_image(sid: str) -> FileResponse:
 def get_session(sid: str) -> dict[str, Any]:
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
+    trace = d / "trace.jsonl"
     return {"id": sid, "image_url": f"/api/sessions/{sid}/image.jpg", **s,
             "anatomy": _read_json(d / "anatomy.json"), "ground": _read_json(d / "ground.json"),
-            "has_mesh": (d / "shell.glb").exists()}
+            "has_mesh": (d / "shell.glb").exists(),
+            "trace": [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []}
 
 
-@app.post("/api/sessions/{sid}/anatomy")
-async def build_anatomy(sid: str) -> dict[str, Any]:
-    """Muse Wonder looks at the photo and infers the object's parts, scenarios and failure modes."""
-    d = _session_dir(sid)
-    s = _read_json(d / "session.json")
-    # Same photo + same prompt -> reuse the earlier inference (keeps demos fast and cheap).
-    cache = DATA / "cache" / f"{s['image_sha'][:24]}-{hashlib.sha256(s['prompt'].encode()).hexdigest()[:12]}.json"
-    if cache.exists():
-        result = _read_json(cache)
-    else:
+def _stream(d: Path, work: Callable[[Emit], Awaitable[None]]) -> StreamingResponse:
+    """Run an agent and stream its events as server-sent events, recording the trace for reloads."""
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    async def emit(event: dict[str, Any]) -> None:
+        queue.put_nowait(event)
+        if event["type"] in TRACED:
+            with (d / "trace.jsonl").open("a") as f:
+                f.write(json.dumps(event) + "\n")
+
+    async def runner() -> None:
         try:
-            result = await meta.chat_json(
-                model=MODEL, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(s["prompt"]),
-                image_jpeg=(d / "image.jpg").read_bytes(), schema_name="anatomy", schema=A.ANATOMY_SCHEMA,
-                reasoning_effort=REASONING, max_tokens=24000,
-            )
+            await work(emit)
         except Exception as e:
-            raise _api_error(e) from e
-        result = A.sanitize(result)
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        _write_json(cache, result)
-    _write_json(d / "anatomy.json", result)
-    return result
+            await emit({"type": "error", "message": str(e) if isinstance(e, meta.MetaAPIError) else repr(e)})
+        finally:
+            queue.put_nowait(None)
+
+    async def events():
+        task = asyncio.create_task(runner())
+        while (event := await queue.get()) is not None:
+            yield f"data: {json.dumps(event)}\n\n"
+        await task
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-@app.post("/api/sessions/{sid}/ground")
-async def ground_anatomy(sid: str) -> dict[str, Any]:
-    """SAM 3.1 finds the object and its visible parts in the photo; visible parts snap to their real positions."""
+TRACED = {"user", "step", "thought", "question", "answer", "error"}
+
+
+@app.post("/api/sessions/{sid}/build")
+async def build_session(sid: str) -> StreamingResponse:
+    """Builder agent: Muse Wonder drafts the anatomy, then verifies it with SAM 3.1, geometry checks and a
+    look at its own layout; finally SAM 3.1 grounds the visible parts for the viewer."""
     d = _session_dir(sid)
-    anatomy = _read_json(d / "anatomy.json")
-    if anatomy is None:
-        raise HTTPException(409, "build the anatomy first")
     s = _read_json(d / "session.json")
-    try:
-        g = await ground((d / "image.jpg").read_bytes(), tuple(s["size"]), anatomy)
-    except Exception as e:
-        raise _api_error(e) from e
-    mask = g.pop("object_mask_png")
-    if mask:
-        (d / "mask.png").write_bytes(mask)
-    _write_json(d / "anatomy.json", anatomy)
-    _write_json(d / "ground.json", g)
-    return {"anatomy": anatomy, "ground": g}
+    image = (d / "image.jpg").read_bytes()
+
+    async def work(emit: Emit) -> None:
+        cache = SegmentCache(image)
+        anatomy = _read_json(d / "anatomy.json")
+        if anatomy is None:
+            # Same photo + same prompt -> reuse the earlier verified anatomy (keeps demos fast and cheap).
+            key = f"{s['image_sha'][:24]}-{hashlib.sha256(s['prompt'].encode()).hexdigest()[:12]}.json"
+            cached = DATA / "cache" / key
+            if cached.exists():
+                anatomy = _read_json(cached)
+                await emit({"type": "step", "agent": "builder", "tool": "cache", "status": "done",
+                            "text": "Reused the verified anatomy for this photo and prompt"})
+            else:
+                anatomy = await build(image=image, prompt=s["prompt"], emit=emit, model=MODEL, reasoning=REASONING, cache=cache)
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                _write_json(cached, anatomy)
+            _write_json(d / "anatomy.json", anatomy)
+        g = _read_json(d / "ground.json")
+        if g is None:
+            await emit({"type": "step", "agent": "builder", "tool": "ground", "status": "running"})
+            g = await ground(image, tuple(s["size"]), anatomy, cache)
+            mask = g.pop("object_mask_png")
+            if mask:
+                (d / "mask.png").write_bytes(mask)
+            _write_json(d / "anatomy.json", anatomy)
+            _write_json(d / "ground.json", g)
+            await emit({"type": "step", "agent": "builder", "tool": "ground", "status": "done" if g["object"] else "error",
+                        "text": f"SAM 3.1 grounded {len(g['parts'])} visible parts" if g["object"]
+                        else "Object not found in photo; showing the inferred layout"})
+        await emit({"type": "anatomy", "anatomy": anatomy})
+        await emit({"type": "ground", "ground": g})
+        await emit({"type": "done"})
+
+    return _stream(d, work)
 
 
 class Ask(BaseModel):
@@ -155,33 +187,28 @@ class Ask(BaseModel):
 
 
 @app.post("/api/sessions/{sid}/ask")
-async def ask(sid: str, body: Ask) -> dict[str, Any]:
-    """Muse Wonder answers a prompt grounded in the anatomy and picks what the viewer should play."""
+async def ask(sid: str, body: Ask) -> StreamingResponse:
+    """Guide agent: answers by driving the viewer, looking closer at the photo, or asking a question first."""
     d = _session_dir(sid)
     anatomy = _read_json(d / "anatomy.json")
     if anatomy is None:
         raise HTTPException(409, "build the anatomy first")
-    s = _read_json(d / "session.json")
-    try:
-        answer = await meta.chat_json(
-            model=MODEL, system=A.ANSWER_SYSTEM,
-            user_text=A.answer_user_text(json.dumps(anatomy), body.prompt, s["history"]),
-            image_jpeg=None, schema_name="answer", schema=A.ANSWER_SCHEMA, reasoning_effort="low", max_tokens=6000,
-        )
-    except Exception as e:
-        raise _api_error(e) from e
-    answer = A.sanitize_answer(answer, anatomy)
-    # New scenarios/failures become part of the object's anatomy for the rest of the session.
-    if answer.get("new_scenario"):
-        anatomy["scenarios"].append(answer["new_scenario"])
-        answer["scenario_id"] = answer["new_scenario"]["id"]
-    if answer.get("new_failure"):
-        anatomy["failures"].append(answer["new_failure"])
-        answer["failure_id"] = answer["new_failure"]["id"]
-    _write_json(d / "anatomy.json", anatomy)
-    s["history"].append(body.prompt)
-    _write_json(d / "session.json", s)
-    return answer
+    image = (d / "image.jpg").read_bytes()
+    messages = _read_json(d / "guide.json") or guide.opening_messages(anatomy, image)
+
+    async def work(emit: Emit) -> None:
+        await emit({"type": "user", "text": body.prompt})
+        try:
+            await guide.respond(anatomy=anatomy, messages=messages, prompt=body.prompt, image=image,
+                                cache=SegmentCache(image), emit=emit, model=MODEL, ground=_read_json(d / "ground.json"))
+        finally:
+            # Scenarios/failures the guide created become part of the object for the rest of the session.
+            _write_json(d / "anatomy.json", anatomy)
+            _write_json(d / "guide.json", messages)
+        await emit({"type": "anatomy", "anatomy": anatomy})
+        await emit({"type": "done"})
+
+    return _stream(d, work)
 
 
 @app.post("/api/sessions/{sid}/reconstruct")
