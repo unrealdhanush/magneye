@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js'
 import type { Anatomy, Ground, MaskMatch, Part, Vec3 } from '../types'
+import { isFrontal, photoExtent } from './pose'
 
 /**
  * The object's main body in millimetres: every part except accessories (a bracelet, a long cable, a stand) when they
@@ -187,7 +188,8 @@ export function explodeDirection(part: Part, s: number, maxLayer: number, bodyCe
  */
 export function warpToProfile(g: THREE.BufferGeometry, anatomy: Anatomy) {
   const rows = anatomy.profile?.rows
-  if (!rows?.length) return g
+  // A side profile lines up with the photo's rows only when the photo is straight-on.
+  if (!rows?.length || !isFrontal(anatomy)) return g
   const s = worldScale(anatomy)
   const [, dh, dd] = anatomy.object.dimensions_mm
   const height = dh * s, depth = dd * s
@@ -204,11 +206,12 @@ export function warpToProfile(g: THREE.BufferGeometry, anatomy: Anatomy) {
   return g
 }
 
-/** A SAM 3.1 mask outline as shapes in world units, in the object's frame (photo = front view). */
+/** A SAM 3.1 mask outline as shapes in world units, in the photo frame (x right, y up in the photo). */
 export function maskShapes(match: MaskMatch, anatomy: Anatomy, ground: Ground): THREE.Shape[] {
   const obj = ground.object
   if (!obj || !match.mask_svg) return []
-  const [dw, dh] = anatomy.object.dimensions_mm
+  // The object's photo box spans its extent as the camera saw it (its own width and height when straight-on).
+  const [dw, dh] = photoExtent(anatomy)
   const s = worldScale(anatomy)
   const [left, top, right, bottom] = obj.box
   const [ml, mt, mr, mb] = match.mask_bounds
@@ -247,7 +250,7 @@ export function extrudeMask(shapes: THREE.Shape[], anatomy: Anatomy, ground: Gro
   lids: [number, number]): THREE.ExtrudeGeometry | null {
   const obj = ground.object
   if (!obj || !shapes.length) return null
-  const [dw, dh] = anatomy.object.dimensions_mm
+  const [dw, dh] = photoExtent(anatomy)
   const s = worldScale(anatomy)
   const [left, top, right, bottom] = obj.box
   const [iw, ih] = ground.image_size

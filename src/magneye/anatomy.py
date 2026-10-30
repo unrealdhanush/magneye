@@ -75,6 +75,8 @@ ANATOMY_SCHEMA = _obj(
                 "category": _str,
                 "summary": _str,
                 "dimensions_mm": _vec3,
+                "camera": _obj({"azimuth_deg": {"type": "number"}, "elevation_deg": {"type": "number"},
+                                "roll_deg": {"type": "number"}}),
                 "confidence": {"type": "number"},
                 "evidence": _ids,
                 "sam_prompt": _str,
@@ -113,7 +115,9 @@ ANATOMY_SCHEMA = _obj(
 
 ANATOMY_SYSTEM = f"""You are Magneye, an engineer who can see inside things. Given one photo of an object and the user's prompt, identify the object and reconstruct its internal anatomy as structured data a 3D viewer will render.
 
-Coordinate frame (millimetres, origin at the object's centre): treat the photo as the front view. +x points to the image's right, +y to the image's top, +z out of the image toward the camera. dimensions_mm is the object's full extent along x, y, z. Every part's center_mm and size_mm are in this frame and must fit inside the object's extent.
+Coordinate frame (millimetres, origin at the object's centre): the object's own frame, as it sits in normal use: +x to its right, +y up, +z out of its front (the side a user faces: a controller's buttons, a watch's dial, an earbud case's front with the status light). dimensions_mm is the object's full extent along x, y, z. Every part's center_mm and size_mm are in this frame and must fit inside the object's extent.
+
+The photo can show the object from any angle; real photos rarely are straight-on. object.camera says where the photo was taken from, relative to the object's front: azimuth_deg is how far the camera has moved around the object (positive toward its right side, 90 = looking straight at its right side, 180 = at its back); elevation_deg is how far above (positive, looking down; 90 = straight down on its top) or below (negative) it is; roll_deg is how far the object's up direction is turned counterclockwise in the photo (a tilted shot or an object lying on its side). A straight-on front photo is 0, 0, 0. Estimate these from the photo, then describe every part in the object's own frame, not as it happens to appear in the photo (a lid on top is +y even when the photo looks down on it).
 
 Orientation: size_mm is always the part's extent along the object's x, y and z axes as it sits in the object, never in the part's own frame. Round shapes orient themselves from it: a disc, ring, gear or spiral faces along its thinnest dimension, and a cylinder, cone, capsule or coil runs along the dimension that differs from the other two. So a watch dial facing the camera is a disc of [30, 30, 1] and a crown sticking out to the right is a cylinder of [6, 4, 4], both with rotation_deg [0, 0, 0]. rotation_deg (XYZ Euler) is only for tilts off those axes, such as a pusher angled at 30 degrees; never use it to stand a shape up or turn it to face the camera. Components follow the same rules.
 
@@ -189,7 +193,12 @@ def _quarter_turns_only(rotation: list[float]) -> bool:
 
 def sanitize(anatomy: dict[str, Any]) -> dict[str, Any]:
     """Drop references to parts that do not exist, so the viewer never receives dangling ids. Round shapes orient
-    themselves from size_mm, so a whole quarter-turn rotation on one only turns it a second time; drop it."""
+    themselves from size_mm, so a whole quarter-turn rotation on one only turns it a second time; drop it. A missing
+    camera means a straight-on photo."""
+    obj = anatomy.get("object")
+    if obj is not None:
+        cam = obj.get("camera") or {}
+        obj["camera"] = {k: float(cam.get(k) or 0) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}
     for p in anatomy.get("parts", []):
         for shape in [p, *(p.get("components") or [])]:
             if shape.get("shape") in ROUND and _quarter_turns_only(shape.get("rotation_deg") or []):

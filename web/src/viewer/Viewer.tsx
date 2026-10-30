@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
 import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, warpToProfile, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_LOOK } from './palette'
+import { isFrontal, photoExtent, photoRotation, spanInPhoto, startCamera } from './pose'
 
 export const REMOVE_MS = 750
 
@@ -34,7 +35,7 @@ type Registry = Map<string, THREE.Object3D>
 export function Viewer(props: ViewerProps) {
   const floor = -(props.anatomy.object.dimensions_mm[1] * worldScale(props.anatomy)) / 2 - 0.5
   return (
-    <Canvas camera={{ position: [3.4, 2.1, 5], fov: 38 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}
+    <Canvas camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}
       onCreated={({ gl }) => { gl.localClippingEnabled = true }} onPointerMissed={() => props.onSelect(null)}>
       <StudioEnvironment />
       <hemisphereLight args={['#ffffff', '#445566', 0.35]} />
@@ -195,10 +196,15 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
     const match = part.grounded ? ground?.parts[part.id] : undefined
     const home = new THREE.Vector3(...part.center_mm).multiplyScalar(s)
     if (match && ground) {
-      const z0 = (part.center_mm[2] - part.size_mm[2] / 2) * s, z1 = (part.center_mm[2] + part.size_mm[2] / 2) * s
-      const g = extrudeMask(maskShapes(match, anatomy, ground), anatomy, ground, z0, z1, [FACE.back, FACE.photo])
+      // The outline is extruded along the camera's line of sight, around where the camera saw the part, then turned
+      // into the object's frame (a no-op for a straight-on photo).
+      const toPhoto = photoRotation(anatomy)
+      const seen = home.clone().applyMatrix4(toPhoto)
+      const half = (spanInPhoto(anatomy, part.size_mm)[2] * s) / 2
+      const g = extrudeMask(maskShapes(match, anatomy, ground), anatomy, ground, seen.z - half, seen.z + half, [FACE.back, FACE.photo])
       if (g) {
-        g.translate(-home.x, -home.y, -home.z)
+        g.translate(-seen.x, -seen.y, -seen.z)
+        g.applyMatrix4(toPhoto.clone().transpose())
         const tone = texture.image ? maskColor(texture.image as HTMLImageElement, match) : new THREE.Color('#3a3a3c')
         const mats = [
           new THREE.MeshStandardMaterial({ map: texture, roughness: 0.45, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
@@ -389,16 +395,21 @@ function useShellFade(materials: THREE.Material[], target: () => number) {
 }
 
 /**
- * The photographed object as a 3D shell: SAM 3.1's outline extruded to Wonder's depth estimate with the photo on
- * the front. It is cut into a front and a back half that pull apart along the depth axis as the object explodes,
- * like a real teardown.
+ * The photographed object as a 3D shell: SAM 3.1's outline extruded along the camera's line of sight with the photo
+ * on the front, turned into the object's frame, and (for a photo taken at an angle) trimmed to the object's own box
+ * so it is not a slab leaning along the view. It is cut into a front and a back half that pull apart along the
+ * object's front-back axis as it explodes, like a real teardown.
  */
 function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assembleAt, delay }:
   { anatomy: Anatomy; ground: Ground; imageUrl: string; explode: number; xray: boolean; playback: Playback; assembleAt: number | null; delay: number }) {
   const texture = useTexture(imageUrl)
   texture.colorSpace = THREE.SRGBColorSpace
   const s = worldScale(anatomy)
-  const depth = anatomy.object.dimensions_mm[2] * s
+  const depth = photoExtent(anatomy)[2] * s
+  const toObject = useMemo(() => new THREE.Quaternion().setFromRotationMatrix(photoRotation(anatomy).transpose()), [anatomy])
+  // The halves part along the object's own front-back axis, like opening the real thing, expressed in the shell's
+  // photo frame (a no-op turn for a straight-on photo).
+  const apart = useMemo(() => new THREE.Vector3(0, 0, 1).applyMatrix4(photoRotation(anatomy)), [anatomy])
   const halves = useMemo(() => {
     if (!ground.object) return null
     const shapes = maskShapes(ground.object, anatomy, ground)
@@ -406,13 +417,18 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
     const back = extrudeMask(shapes, anatomy, ground, -depth / 2, 0, [FACE.back, FACE.cut])
     return front && back ? { front: warpToProfile(front, anatomy), back: warpToProfile(back, anatomy) } : null
   }, [anatomy, ground, depth])
-  // With accessories (a bracelet, a cable) the shell is trimmed to the main body; the accessories have pieces of their own.
+  // Trimmed to the main body's box: across the photo plane when accessories (a bracelet, a cable) have pieces of
+  // their own, and in depth too when the photo was taken at an angle.
   const clip = useMemo(() => {
     const { center, size, trimmed } = bodyBox(anatomy)
-    if (!trimmed) return null
-    const [cx, cy, hx, hy] = [center[0] * s, center[1] * s, size[0] * s * 0.55, size[1] * s * 0.55]
-    return [new THREE.Plane(new THREE.Vector3(1, 0, 0), hx - cx), new THREE.Plane(new THREE.Vector3(-1, 0, 0), cx + hx),
-      new THREE.Plane(new THREE.Vector3(0, 1, 0), hy - cy), new THREE.Plane(new THREE.Vector3(0, -1, 0), cy + hy)]
+    const angled = !isFrontal(anatomy)
+    if (!trimmed && !angled) return null
+    const k = trimmed ? 0.55 : 0.52
+    const axes = angled ? [0, 1, 2] : [0, 1]
+    return axes.flatMap(i => {
+      const n = new THREE.Vector3().setComponent(i, 1), c = center[i] * s, h = size[i] * s * k
+      return [new THREE.Plane(n, h - c), new THREE.Plane(n.clone().negate(), c + h)]
+    })
   }, [anatomy, s])
   const materials = useMemo(() => {
     const tone = ground.object && texture.image ? maskColor(texture.image as HTMLImageElement, ground.object) : new THREE.Color('#3a3a3c')
@@ -433,12 +449,12 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
   useFrame((_, dt) => {
     current.current = step(dt, performance.now()).value
     const gap = current.current * 1.8
-    if (front.current) front.current.position.z = gap
-    if (back.current) back.current.position.z = -gap
+    front.current?.position.copy(apart).multiplyScalar(gap)
+    back.current?.position.copy(apart).multiplyScalar(-gap)
   })
   if (!halves) return null
   return (
-    <group>
+    <group quaternion={toObject}>
       <mesh ref={front} geometry={halves.front} material={materials} renderOrder={10} raycast={() => null} />
       <mesh ref={back} geometry={halves.back} material={materials} renderOrder={10} raycast={() => null} />
     </group>

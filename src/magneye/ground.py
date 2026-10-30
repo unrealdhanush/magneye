@@ -9,7 +9,7 @@ from typing import Any
 
 from PIL import Image
 
-from . import meta
+from . import meta, pose
 
 MAX_PHRASES = 10
 FACING_ROUND = {"disc", "ring", "gear", "spiral"}
@@ -36,7 +36,8 @@ class SegmentCache:
 
 @dataclass
 class Frame:
-    """Maps between photo pixels and the object's millimetre frame (photo = front view, +y up)."""
+    """Maps between photo pixels and millimetres in the photo plane (x right, y up in the photo, origin at the
+    object's centre). `dims` is the object's span in that plane; for a straight-on photo, its own width and height."""
 
     box: list[float]
     dims: list[float]
@@ -87,7 +88,7 @@ async def object_frame(cache: SegmentCache, anatomy: dict[str, Any]) -> tuple[Fr
         if not isinstance(matches, Exception) and matches:
             obj["sam_prompt"] = phrase
             target = pick_object(matches)
-            return Frame(target["box"], obj["dimensions_mm"]), target
+            return Frame(target["box"], pose.photo_extent(anatomy)), target
     return None
 
 
@@ -117,11 +118,14 @@ async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any],
 
     grounded: dict[str, Any] = {}
     taken: set[tuple[str, str]] = set()
+    # From an angle, SAM's boxes are foreshortened views of the parts, so only their centres are trusted.
+    frontal = pose.frontal(anatomy)
     for part in visible:
         matches = results.get(part["sam_prompt"])
         if isinstance(matches, Exception) or not matches:
             continue
-        expected = frame.to_px(part["center_mm"][0], part["center_mm"][1])
+        seen_at = pose.in_photo(anatomy, part["center_mm"])
+        expected = frame.to_px(seen_at[0], seen_at[1])
         candidates = [m for m in part_matches(frame, target, matches) if (part["sam_prompt"], m["object_id"]) not in taken]
         if not candidates:
             continue
@@ -129,12 +133,13 @@ async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any],
         mm = frame.box_to_mm(best["box"])
         bw, bh = mm["size_mm"]
         # A round part facing the camera has a square box; a long one means SAM caught neighbouring parts too.
-        if part["shape"] in FACING_ROUND and part["size_mm"][2] <= min(part["size_mm"][:2]) and max(bw, bh) > 1.3 * max(min(bw, bh), 0.1):
+        if (frontal and part["shape"] in FACING_ROUND and part["size_mm"][2] <= min(part["size_mm"][:2])
+                and max(bw, bh) > 1.3 * max(min(bw, bh), 0.1)):
             continue
         taken.add((part["sam_prompt"], best["object_id"]))
-        part["center_mm"][0], part["center_mm"][1] = mm["center_mm"]
+        part["center_mm"] = pose.place_in_photo(anatomy, part["center_mm"], *mm["center_mm"])
         # Only trust SAM's extent when it is in the same ballpark as Wonder's estimate (rotated parts skew boxes).
-        if 0.33 < bw / max(part["size_mm"][0], 0.1) < 3 and 0.33 < bh / max(part["size_mm"][1], 0.1) < 3:
+        if frontal and 0.33 < bw / max(part["size_mm"][0], 0.1) < 3 and 0.33 < bh / max(part["size_mm"][1], 0.1) < 3:
             part["size_mm"][0], part["size_mm"][1] = bw, bh
         part["grounded"] = True
         grounded[part["id"]] = {"box": best["box"], "confidence": best["confidence"], "mask_svg": best["mask_svg"],

@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import meta, views
+from . import meta, pose, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches
@@ -17,18 +17,21 @@ PART_SCHEMA = A.ANATOMY_SCHEMA["properties"]["parts"]["items"]
 
 BUILDER_SYSTEM = """You are Magneye's builder. You drafted the anatomy of the object in the photo; now verify it before anyone sees it, and fix what is wrong.
 
+Two frames: the anatomy is in the object's own frame (x its right, y up, z out of its front). The photo plane is what the camera saw: x right and y up in the photo, in millimetres, origin at the object's centre. For a straight-on photo (object.camera all near 0) they coincide; from an angle, use the photo-plane tools below for anything you measure in the photo.
+
 Tools:
-- find_in_photo(phrase): SAM 3.1 segments a noun phrase in the photo and reports matches on the object, as centre/size in the object's millimetre frame (x right, y up, origin at the object's centre). Use it to confirm parts you marked visible, find their real positions, and discover visible parts you missed. "No matches" means the part is probably not visible: set its sam_prompt to null, or remove it if it was exterior and imaginary. SAM wants plain generic nouns ("button", "strap", "lens"); brand names and labels match nothing, so retry a miss with a simpler noun before concluding. SAM finds whatever best fits the phrase, so a match far from where you expect is probably a different part: compare positions before trusting it.
+- find_in_photo(phrase): SAM 3.1 segments a noun phrase in the photo and reports matches on the object as photo-plane centre/size. When the photo is at an angle it also lists where your visible parts currently appear in the photo plane, to compare like with like. Use it to confirm parts you marked visible, find their real positions, and discover visible parts you missed. "No matches" means the part is probably not visible: set its sam_prompt to null, or remove it if it was exterior and imaginary. SAM wants plain generic nouns ("button", "strap", "lens"); brand names and labels match nothing, so retry a miss with a simpler noun before concluding. SAM finds whatever best fits the phrase, so a match far from where you expect is probably a different part: compare positions before trusting it.
 - check_geometry(): lists physical problems (parts outside the object, internal parts in the same space, access paths that dig outward).
-- view_layout(): shows every part's front-view footprint drawn over the photo (exterior cyan, internal orange). Use it to judge proportions and placement.
-- move_parts(dx_mm, dy_mm, dz_mm, ids): shift a group of parts together (default: every part except accessories). When SAM shows the whole body sits off where you drafted it, one move_parts call fixes every part at once; do not rewrite each centre with update_parts.
-- update_parts / add_part / remove_part: edit the anatomy. Put every part change into ONE update_parts call. Keep ids stable; give a short reason per part.
+- view_layout(): shows every part's box as the camera sees it, drawn over the photo (exterior cyan, internal orange). Use it to judge proportions and placement.
+- move_parts(dx_mm, dy_mm, dz_mm, ids): shift a group of parts together in the photo plane (right, up, toward the camera; default: every part except accessories). When SAM shows the whole body sits off where you drafted it, one move_parts call fixes every part at once; do not rewrite each centre with update_parts.
+- place_in_photo(updates): put parts where SAM saw them, as photo-plane x_mm, y_mm; their depth is kept and the object-frame position is worked out for you.
+- update_parts / add_part / remove_part: edit the anatomy, in the object's own frame. Put every part change into ONE update_parts call. Keep ids stable; give a short reason per part.
 - finish(summary): call when the anatomy is consistent with the photo and check_geometry reports nothing serious.
 
 Work in at most three turns:
 1. In one turn, call find_in_photo for every part you marked visible, plus check_geometry and view_layout.
 2. Retry any misses with simpler nouns, if needed, and call move_parts if the whole body is offset, in one turn.
-3. Apply the remaining fixes in one update_parts call (plus any add_part/remove_part), using positions after any move, and call finish in that same turn.
+3. Apply the remaining fixes in one place_in_photo and/or update_parts call (plus any add_part/remove_part), using positions after any move, and call finish in that same turn.
 Do not invent precision you cannot see; hidden internals stay inferred."""
 
 
@@ -135,7 +138,11 @@ async def build(
         on_object = part_matches(frame, target, matches)[:6]
         found_mm = [{**frame.box_to_mm(m["box"]), "confidence": round(m["confidence"] or 0, 2)} for m in on_object]
         summary = f"SAM 3.1: {len(found_mm)} × “{phrase}”" if found_mm else f"SAM 3.1: no “{phrase}” on the object"
-        return ToolResult(json.dumps({"phrase": phrase, "matches": found_mm}), summary)
+        result: dict[str, Any] = {"phrase": phrase, "matches": found_mm}
+        if not pose.frontal(work):
+            result["your_parts_in_photo"] = {p["id"]: [round(v, 1) for v in pose.in_photo(work, p["center_mm"])[:2]]
+                                             for p in work["parts"] if p.get("sam_prompt")}
+        return ToolResult(json.dumps(result), summary)
 
     async def check_geometry(_: dict[str, Any]) -> ToolResult:
         issues = geometry_issues(work)
@@ -153,12 +160,32 @@ async def build(
         except (TypeError, ValueError):
             return ToolResult("dx_mm, dy_mm and dz_mm must be numbers.", "move_parts rejected", ok=False)
         ids = set(a.get("ids") or [p["id"] for p in work["parts"] if p["kind"] != "accessory"]) & set(parts)
+        shift = pose.shift_in_photo(work, d)
         for pid in ids:
-            parts[pid]["center_mm"] = [round(c + v, 1) for c, v in zip(parts[pid]["center_mm"], d)]
+            parts[pid]["center_mm"] = [round(c + v, 1) for c, v in zip(parts[pid]["center_mm"], shift)]
         if ids:
             await changed()
         return ToolResult(json.dumps({"moved": sorted(ids)}),
                           f"Moved {_count(len(ids), 'part', 'parts')} by ({', '.join(f'{v:+g}' for v in d)}) mm", ok=bool(ids))
+
+    async def place_in_photo(a: dict[str, Any]) -> ToolResult:
+        done, unknown = [], []
+        for u in a.get("updates", []):
+            p = parts.get(u.get("id", ""))
+            try:
+                x, y = float(u["x_mm"]), float(u["y_mm"])
+            except (KeyError, TypeError, ValueError):
+                unknown.append(u.get("id"))
+                continue
+            if p is None:
+                unknown.append(u.get("id"))
+                continue
+            p["center_mm"] = pose.place_in_photo(work, p["center_mm"], x, y)
+            done.append(p["id"])
+        if done:
+            await changed()
+        return ToolResult(json.dumps({"placed": done, "rejected": unknown}),
+                          f"Placed {_count(len(done), 'part', 'parts')} where SAM saw them" if done else "No parts placed", ok=bool(done))
 
     async def update_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
@@ -203,9 +230,13 @@ async def build(
              params({"phrase": {"type": "string"}}), find_in_photo),
         Tool("check_geometry", "List physical plausibility problems in the current anatomy.", params({}), check_geometry),
         Tool("view_layout", "See the current part layout drawn over the photo.", params({}), view_layout),
-        Tool("move_parts", "Shift a group of parts by the same offset (default: all parts except accessories).",
+        Tool("move_parts", "Shift a group of parts by the same photo-plane offset (default: all parts except accessories).",
              params({"dx_mm": {"type": "number"}, "dy_mm": {"type": "number"}, "dz_mm": {"type": "number"},
                      "ids": {"type": "array", "items": {"type": "string"}}}, ["dx_mm", "dy_mm", "dz_mm"]), move_parts),
+        Tool("place_in_photo", "Put parts at photo-plane positions (x right, y up in the photo, mm), keeping their depth.",
+             params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, "x_mm": {"type": "number"},
+                                                                    "y_mm": {"type": "number"}, "reason": {"type": "string"}},
+                                                                   ["id", "x_mm", "y_mm", "reason"])}}), place_in_photo),
         Tool("update_parts", "Change fields of several parts in one call.",
              params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, "reason": {"type": "string"}, **editable}, ["id", "reason"])}}),
              update_parts),

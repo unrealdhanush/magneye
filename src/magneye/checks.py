@@ -7,6 +7,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from . import pose
 from .ground import Frame
 
 
@@ -67,17 +68,33 @@ def geometry_issues(anatomy: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Convex hull (monotone chain), so a box seen from an angle is drawn as its true outline."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+
+    def half(seq: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        out: list[tuple[float, float]] = []
+        for p in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1]) - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out[:-1]
+    return half(pts) + half(pts[::-1])
+
+
 def layout_overlay(photo_jpeg: bytes, frame: Frame, anatomy: dict[str, Any]) -> bytes:
-    """Draw every part's front-view footprint over the photo so the model can see its own layout."""
+    """Draw every part's box as the camera sees it over the photo, so the model can see its own layout."""
     im = Image.open(io.BytesIO(photo_jpeg)).convert("RGB")
     draw = ImageDraw.Draw(im, "RGBA")
     draw.rectangle(frame.box, outline=(255, 255, 255, 255), width=3)
     for p in sorted(anatomy["parts"], key=lambda q: -q["layer"]):
-        (x0, y0, _), (x1, y1, _) = _bounds(p)
-        (px0, py0), (px1, py1) = frame.to_px(x0, y1), frame.to_px(x1, y0)
+        outline = [frame.to_px(x, y) for x, y in _hull(pose.box_corners_in_photo(anatomy, p["center_mm"], p["size_mm"]))]
         colour = (64, 200, 224) if p["kind"] == "exterior" else (255, 159, 10)
-        draw.rectangle([px0, py0, px1, py1], outline=colour + (255,), fill=colour + (40,), width=2)
-        draw.text((px0 + 3, py0 + 2), p["id"], fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
+        draw.polygon(outline, outline=colour + (255,), fill=colour + (40,), width=2)
+        left, top = min(x for x, _ in outline), min(y for _, y in outline)
+        draw.text((left + 3, top + 2), p["id"], fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 255))
     out = io.BytesIO()
     im.save(out, "JPEG", quality=85)
     return out.getvalue()

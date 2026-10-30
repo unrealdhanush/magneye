@@ -34,6 +34,8 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   verify: { label: 'Verify', model: 'Muse Wonder', orb: 'solving' },
   side_profile: { label: 'Trace the side profile', model: 'SAM 3.1', orb: 'shaping' },
   move_parts: { label: 'Move the body', model: 'Muse Wonder', orb: 'shaping' },
+  place_in_photo: { label: 'Place parts as seen', model: 'Muse Wonder', orb: 'shaping' },
+  clean_photo: { label: 'Clear what covers it', model: 'SAM 3.1 · Muse Image', orb: 'shaping' },
   thought: { label: 'Thinking', model: 'Muse Wonder', orb: 'solving' },
   error: { label: 'Error', model: '', orb: 'working' },
 }
@@ -111,8 +113,10 @@ export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: 
 }
 
 /** The input photo with SAM 3.1's masks traced over it. */
-export function PhotoMasks({ imageUrl, ground, anatomy, selectedId, onSelect }:
-  { imageUrl: string; ground: Ground | null; anatomy: Anatomy | null; selectedId: string | null; onSelect: (id: string) => void }) {
+export function PhotoMasks({ imageUrl, originalUrl, ground, anatomy, selectedId, onSelect }: {
+  imageUrl: string; originalUrl?: string | null; ground: Ground | null; anatomy: Anatomy | null; selectedId: string | null
+  onSelect: (id: string) => void
+}) {
   const names = new Map(anatomy?.parts.map(p => [p.id, p.name]))
   return (
     <figure className="space-y-1">
@@ -130,9 +134,15 @@ export function PhotoMasks({ imageUrl, ground, anatomy, selectedId, onSelect }:
           </svg>
         )}
       </div>
-      {ground && (
-        <figcaption className="font-mono text-caption text-muted">
-          SAM 3.1 · object {ground.object ? 'found' : 'not found'} · {Object.keys(ground.parts).length} visible parts grounded
+      {(ground || originalUrl) && (
+        <figcaption className="space-y-px font-mono text-caption text-muted">
+          {ground && <span className="block">SAM 3.1 · object {ground.object ? 'found' : 'not found'} · {Object.keys(ground.parts).length} visible parts grounded</span>}
+          {originalUrl && (
+            <span className="block">
+              Muse Image removed the hand covering it; the hidden part is filled in, not seen ·{' '}
+              <a href={originalUrl} target="_blank" rel="noopener noreferrer">original photo</a>
+            </span>
+          )}
         </figcaption>
       )}
     </figure>

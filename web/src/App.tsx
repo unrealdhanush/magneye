@@ -101,6 +101,8 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
           return [...prev, next]
         })
         if (e.status !== 'running' && live) setThinking(e.tool === 'ground' || e.tool === 'finish' ? null : e.agent)
+        // Muse Image may have replaced the photo: pick up its new URL so the panel and the 3D texture show it.
+        if (live && e.tool === 'clean_photo' && e.status === 'done') api.session(sid).then(setSession).catch(() => {})
         break
       case 'thought': setSteps(prev => [...prev, { agent: e.agent, tool: 'thought', status: 'note', text: e.text }]); break
       case 'user': setTurns(t => [...t, { role: 'user', text: e.text }]); break
@@ -112,7 +114,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
       case 'error': setThinking(null); setSteps(prev => [...prev, { agent: 'guide', tool: 'error', status: 'error', text: e.message }]); break
       case 'done': setThinking(null); break
     }
-  }, [act])
+  }, [act, sid])
 
   const [asking, setAsking] = useState(false)
   const ask = useCallback(async (prompt: string) => {
@@ -166,7 +168,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
     // panels flank the stage and grow with the window, and 3xl splits the right panel into two columns.
     <div className="grid gap-2 pt-2 md:grid-cols-2 xl:grid-cols-[clamp(300px,20vw,440px)_minmax(0,1fr)_clamp(340px,24vw,520px)] 3xl:grid-cols-[clamp(360px,17vw,480px)_minmax(0,1fr)_clamp(720px,32vw,960px)]">
       <aside className="order-2 min-w-0 space-y-2 xl:order-1 xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1" aria-label="Input and agent trace">
-        <PhotoMasks imageUrl={session.image_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
+        <PhotoMasks imageUrl={session.image_url} originalUrl={session.original_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
         <AgentTrace steps={steps} thinking={thinking} />
         {anatomy && anatomy.caveats.length > 0 && (
           <details className="rounded-md bg-card p-1.5 text-footnote text-muted shadow-ring">

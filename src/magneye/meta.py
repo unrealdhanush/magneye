@@ -230,6 +230,28 @@ async def segment(image_jpeg: bytes, phrase: str) -> list[dict[str, Any]]:
     return matches
 
 
+async def edit_image(jpeg: bytes, prompt: str, *, model: str = "muse-image-1.0", size: tuple[int, int] | None = None) -> bytes:
+    """One instruction-driven Muse Image edit of a photo; returns the edited image as JPEG bytes. A single pass, since
+    these edits only repair the photo itself."""
+    body: dict[str, Any] = {
+        "model": model, "prompt": prompt, "images": [{"image_url": data_url(jpeg)}], "n": 1,
+        "output_format": "jpeg", "reasoning_strength": "low",
+    }
+    if size:
+        body["size"] = f"{size[0]}x{size[1]}"
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.post(f"{BASE_URL}/images/edits", headers=_headers(), json=body)
+    if r.status_code >= 400:
+        raise MetaAPIError(f"images/edits {r.status_code}: {r.text[:500]}")
+    item = (r.json().get("data") or [{}])[0]
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"])
+    if item.get("url"):
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            return (await client.get(item["url"])).content
+    raise MetaAPIError(f"images/edits returned no image: {str(r.json())[:300]}")
+
+
 async def transcribe(wav: bytes) -> str:
     """Muse Voice Transcribe on a 16/24 kHz mono 16-bit WAV clip."""
     request = json.dumps({"mode": "PUSH_TO_TALK", "model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV"})

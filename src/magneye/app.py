@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from . import guide, meta
 from .agent import Emit
 from .builder import build
+from .clean import clear_hands
 from .ground import SegmentCache, ground
 
 load_dotenv()
@@ -128,9 +129,12 @@ def get_session(sid: str) -> dict[str, Any]:
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
     trace = d / "trace.jsonl"
-    return {"id": sid, "image_url": f"/api/sessions/{sid}/image.jpg", **s,
+    # A cleaned photo gets its own URL, so a browser that cached the photo as taken fetches the new one.
+    image_url = f"/api/sessions/{sid}/image.jpg" + ("?v=cleaned" if s.get("cleaned") else "")
+    return {"id": sid, **s, "image_url": image_url,
             "anatomy": _read_json(d / "anatomy.json"), "ground": _read_json(d / "ground.json"),
             "has_mesh": (d / "shell.glb").exists(),
+            "original_url": f"/api/sessions/{sid}/original.jpg" if (d / "original.jpg").exists() else None,
             "trace": [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []}
 
 
@@ -164,16 +168,62 @@ def _stream(d: Path, work: Callable[[Emit], Awaitable[None]]) -> StreamingRespon
 TRACED = {"user", "step", "thought", "question", "answer", "error"}
 
 
+@app.get("/api/sessions/{sid}/original.jpg")
+def session_original_image(sid: str) -> FileResponse:
+    path = _session_dir(sid) / "original.jpg"
+    if not path.exists():
+        raise HTTPException(404, "the photo was used as taken")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+async def _clear_photo(d: Path, s: dict[str, Any], emit: Emit) -> bytes:
+    """The photo every later step reads: the user's own, or a copy with a covering hand removed by Muse Image. Decided
+    once per session (the original kept as original.jpg) and cached by the original photo, so the same photo is
+    never edited twice. Sessions built before this step are left as they are."""
+    photo = d / "image.jpg"
+    if "cleaned" in s or (d / "anatomy.json").exists():
+        return photo.read_bytes()
+    original = photo.read_bytes()
+    cached = DATA / "cache" / f"{s['image_sha'][:24]}.clean.jpg"
+    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "running"})
+    found: dict[str, Any] | None
+    if cached.exists():
+        found = {"image": cached.read_bytes()}
+    else:
+        try:
+            found = await clear_hands(original, tuple(s["size"]))
+        except meta.MetaAPIError as e:
+            s["cleaned"] = None
+            _write_json(d / "session.json", s)
+            await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "error",
+                        "text": f"Couldn't check the photo for hands ({e}); using it as taken"})
+            return original
+    if found:
+        jpeg, size = _normalize_image(found["image"])
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(found["image"])
+        (d / "original.jpg").write_bytes(original)
+        photo.write_bytes(jpeg)
+        s.update(cleaned={"by": "muse-image-1.0", "removed": "hand"}, size=list(size))
+        text = "Muse Image removed the hand covering the object and restored the part it hid"
+    else:
+        s["cleaned"] = None
+        text = "Nothing covering the object"
+    _write_json(d / "session.json", s)
+    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "done", "text": text})
+    return photo.read_bytes()
+
+
 @app.post("/api/sessions/{sid}/build")
 async def build_session(sid: str) -> StreamingResponse:
     """Builder agent: Muse Wonder drafts the anatomy, then verifies it with SAM 3.1, geometry checks and a
     look at its own layout; finally SAM 3.1 grounds the visible parts for the viewer."""
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
-    image = (d / "image.jpg").read_bytes()
     own = [p.read_bytes() for p in _extra_photos(d)]
 
     async def work(emit: Emit) -> None:
+        image = await _clear_photo(d, s, emit)
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
         # Same photos + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).

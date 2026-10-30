@@ -3,6 +3,8 @@ import { IconCamera, IconX } from './icons'
 
 const isPhone = (d: MediaDeviceInfo) => /iphone|ipad/i.test(d.label)
 const STORE = 'magneye.camera'
+const TIMER_STORE = 'magneye.camera-timer'
+const TIMERS = [0, 3, 10]
 
 // The camera the user last picked, kept per browser like a meeting app's camera setting.
 function remembered(): string | null {
@@ -10,6 +12,9 @@ function remembered(): string | null {
 }
 function remember(id: string | null) {
   try { if (id) localStorage.setItem(STORE, id); else localStorage.removeItem(STORE) } catch { /* storage unavailable */ }
+}
+function rememberedTimer(): number {
+  try { const n = Number(localStorage.getItem(TIMER_STORE)); return TIMERS.includes(n) ? n : 0 } catch { return 0 }
 }
 
 async function listCameras() {
@@ -38,6 +43,9 @@ export function CameraCapture({ onCapture, onClose }: { onCapture: (photo: Blob)
   const [resolution, setResolution] = useState<string | null>(null)
   // Once the user picks a camera in this view, stop switching automatically.
   const chosen = useRef(false)
+  // Self-timer: with an iPhone as the camera there is no shutter on the phone, so this frees both hands.
+  const [timer, setTimer] = useState(rememberedTimer)
+  const [countdown, setCountdown] = useState<number | null>(null)
 
   useEffect(() => {
     let stream: MediaStream | null = null
@@ -85,13 +93,31 @@ export function CameraCapture({ onCapture, onClose }: { onCapture: (photo: Blob)
 
   const pick = (id: string) => { chosen.current = true; remember(id); setDeviceId(id) }
 
-  const capture = () => {
+  const grab = () => {
     const v = video.current
     if (!v || !v.videoWidth) return
     const c = document.createElement('canvas')
     c.width = v.videoWidth; c.height = v.videoHeight
     c.getContext('2d')!.drawImage(v, 0, 0)
     c.toBlob(b => b && onCapture(b), 'image/jpeg', 0.92)
+  }
+
+  useEffect(() => {
+    if (countdown === null) return
+    if (countdown === 0) { setCountdown(null); grab(); return }
+    const id = setTimeout(() => setCountdown(n => (n === null ? null : n - 1)), 1000)
+    return () => clearTimeout(id)
+  }, [countdown]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Capture again while counting down cancels the timer.
+  const capture = () => {
+    if (countdown !== null) setCountdown(null)
+    else if (timer) setCountdown(timer)
+    else grab()
+  }
+  const chooseTimer = (n: number) => {
+    setTimer(n)
+    try { localStorage.setItem(TIMER_STORE, String(n)) } catch { /* storage unavailable */ }
   }
 
   const hasPhone = cameras.some(isPhone)
@@ -101,6 +127,14 @@ export function CameraCapture({ onCapture, onClose }: { onCapture: (photo: Blob)
         <video ref={video} autoPlay playsInline muted className="aspect-video w-full object-cover" />
         {error && <p className="absolute inset-0 p-2 text-callout text-white">Camera unavailable: {error}</p>}
         {resolution && <span className="absolute bottom-1 left-1 rounded-sm bg-black/60 px-1 font-mono text-caption2 leading-5 text-white">{resolution}</span>}
+        {countdown !== null && (
+          <span className="absolute inset-0 grid place-items-center bg-black/30">
+            <span role="timer" aria-live="assertive"
+              className="glass grid h-8 w-8 place-items-center rounded-full font-display text-largeTitle text-white tabular">
+              {countdown}
+            </span>
+          </span>
+        )}
       </div>
       {cameras.length > 0 && (
         <label className="flex items-center gap-1 text-subheadline text-ink">
@@ -117,11 +151,19 @@ export function CameraCapture({ onCapture, onClose }: { onCapture: (photo: Blob)
           the same Apple ID with Wi-Fi and Bluetooth on, and it appears in this list.
         </p>
       )}
-      <div className="flex gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         <button type="button" onClick={capture} disabled={!!error}
           className="press inline-flex min-h-tap items-center gap-1 rounded-sm bg-accent-fill px-2 py-1.5 text-headline text-white hover:bg-accent-strong disabled:opacity-40">
-          <IconCamera className="h-3 w-3" strokeWidth={2} /> Capture
+          <IconCamera className="h-3 w-3" strokeWidth={2} /> {countdown !== null ? 'Cancel timer' : timer ? `Capture in ${timer} s` : 'Capture'}
         </button>
+        <div role="radiogroup" aria-label="Self-timer" className="inline-flex rounded-sm bg-card p-px shadow-ring">
+          {TIMERS.map(n => (
+            <button key={n} type="button" role="radio" aria-checked={timer === n} onClick={() => chooseTimer(n)}
+              className={`press min-h-tap rounded-sm px-1.5 text-subheadline ${timer === n ? 'bg-accent-fill text-white' : 'text-ink hover:bg-ink/5'}`}>
+              {n ? `${n} s` : 'No timer'}
+            </button>
+          ))}
+        </div>
         <button type="button" onClick={onClose}
           className="press inline-flex min-h-tap items-center gap-1 rounded-sm px-2 py-1.5 text-body text-ink shadow-ring hover:shadow-ring-hover">
           <IconX className="h-3 w-3" /> Cancel

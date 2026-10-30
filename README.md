@@ -10,9 +10,10 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 
 **Builder agent:** turns the photo into a verified anatomy.
 
+0. Clears what covers the object: when **SAM 3.1** finds a hand on it, **Muse Image** removes the hand and restores the part it hid, so the outline and shell are whole. The original photo is kept, and the UI says the hidden part was filled in.
 1. Researches the object with Muse Wonder's web search: identifies the exact product, then looks for teardowns, specs and common failures (at most 6 searches) and writes a cited blueprint brief. Only URLs the search actually returned are kept as sources.
 2. Finds other angles of the same product: photos on Wikimedia Commons (shown with licence and author) and on the pages the research cited (used as model input and linked, not shown). The user's own extra photos come first, each one kept. Muse Wonder vets each one (same body shape? which side?) and keeps up to three.
-3. Drafts the anatomy as JSON from the photo, the brief and those views: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes. Each part is marked seen, documented (by a cited source) or inferred. Straps, bracelets and cables are accessories: the viewer frames the main body and moves them aside.
+3. Drafts the anatomy as JSON from the photo, the brief and those views: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes. Each part is marked seen, documented (by a cited source) or inferred. Photos are rarely straight-on, so the draft also estimates where the camera was (azimuth, elevation, roll) and describes the parts in the object's own frame; SAM matching, the layout overlay and the 3D shell all project through that viewpoint, and the viewer shows the object upright. Straps, bracelets and cables are accessories: the viewer frames the main body and moves them aside.
 4. Verifies the draft with its tools:
    - `find_in_photo` runs **SAM 3.1** on a noun phrase. It confirms each part the draft calls visible, reports where the part really is in the object's millimetre frame, and catches parts the draft imagined.
    - `check_geometry` flags parts outside the object, internal parts that share the same space, and removal orders that dig outward.
@@ -29,7 +30,8 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 |---|---|
 | **Muse Wonder** | Both agents |
 | **Muse Wonder + web search** | The builder's research and its vetting of reference photos |
-| **SAM 3.1** | Builder verification, grounding, side profiles, the guide's close-ups |
+| **SAM 3.1** | Builder verification, grounding, side profiles, hand detection, the guide's close-ups |
+| **Muse Image** | Removing a hand that covers the object and restoring what it hid |
 | **SAM 3D Objects** (open weights, on Modal) | Optional 3D mesh that replaces the extruded silhouette |
 | **Muse Voice Transcribe** | Push-to-talk questions |
 

@@ -57,6 +57,8 @@ export interface Anatomy {
     category: string
     summary: string
     dimensions_mm: Vec3
+    /** Where the photo was taken from, relative to the object's front (see src/magneye/pose.py). */
+    camera?: { azimuth_deg: number; elevation_deg: number; roll_deg: number }
     confidence: number
     evidence: string[]
     sam_prompt: string
@@ -130,6 +132,8 @@ export interface Session {
   anatomy: Anatomy | null
   ground: Ground | null
   has_mesh: boolean
+  /** Set when Muse Image removed a hand covering the object: the photo as taken. */
+  original_url: string | null
   trace: AgentEvent[]
 }
 
