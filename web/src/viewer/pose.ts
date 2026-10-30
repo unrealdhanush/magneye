@@ -21,15 +21,6 @@ export function photoRotation(anatomy: Anatomy): THREE.Matrix4 {
 
 export const isFrontal = (anatomy: Anatomy) => angles(anatomy).every(v => Math.abs(v) < FRONTAL_DEG)
 
-/**
- * A photo taken from so far round, above or tilted that its outline, pushed back along the line of sight and
- * trimmed to the object's box, no longer resembles the object (an object lying on its side, shot from above).
- */
-export function isSteep(anatomy: Anatomy) {
-  const [a, e, r] = angles(anatomy)
-  return Math.abs(r) > 30 || Math.abs(a) > 50 || Math.abs(e) > 55
-}
-
 /** How far an object-frame box of `size` spans along the photo's x, y and z. */
 export function spanInPhoto(anatomy: Anatomy, size: Vec3): Vec3 {
   const m = photoRotation(anatomy).elements // column-major
