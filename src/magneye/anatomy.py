@@ -85,7 +85,7 @@ ANATOMY_SCHEMA = _obj(
                 {
                     "id": _str,
                     "name": _str,
-                    "kind": {"type": "string", "enum": ["exterior", "internal"]},
+                    "kind": {"type": "string", "enum": ["exterior", "internal", "accessory"]},
                     "function": _str,
                     "material": {"type": "string", "enum": MATERIALS},
                     "shape": {"type": "string", "enum": SHAPES},
@@ -116,6 +116,7 @@ Coordinate frame (millimetres, origin at the object's centre): treat the photo a
 
 Parts:
 - 12 to 28 parts. Include the outer housing pieces as kind "exterior", plus every functionally important internal component as kind "internal" (boards, sensors, actuators, batteries, springs, mechanisms, fasteners that matter for disassembly).
+- Attachments outside the main body that are not part of its mechanism (watch strap or bracelet, clasp, cable, stand, lanyard) are kind "accessory", layer 0. Keep them to 1 to 3 parts; the viewer frames the main body and moves accessories aside when it explodes.
 - id is snake_case and unique. shape is one of {SHAPES}; pick the closest primitive and size it realistically. material is one of {MATERIALS}.
 - layer is depth from the outside: 0 is the outer shell, then increasing as you go inward. It drives the exploded view and the disassembly order.
 - sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "thumbstick", "button", "strap", "lens"; bad: "Oculus menu button", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.

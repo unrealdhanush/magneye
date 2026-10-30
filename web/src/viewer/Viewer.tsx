@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
-import { DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, worldScale } from './geometry'
+import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_LOOK } from './palette'
 
 export const REMOVE_MS = 750
@@ -41,14 +41,26 @@ export function Viewer(props: ViewerProps) {
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
       <directionalLight position={[-4, -2, -3]} intensity={0.35} color="#88aaff" />
       <ContactShadows position={[0, floor, 0]} scale={9} blur={2.6} far={4} opacity={0.5} resolution={512} />
+      {/* Frame the assembled main body once; explode/playback then move parts within that view. */}
+      <Bounds fit clip margin={1.9}>
+        <BodyFrame anatomy={props.anatomy} />
+      </Bounds>
       <Suspense fallback={null}>
-        {/* Frame the assembled object once; explode/playback then move parts within that view. */}
-        <Bounds fit clip margin={1.9}>
-          <Scene {...props} />
-        </Bounds>
+        <Scene {...props} />
       </Suspense>
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={1.2} maxDistance={12} />
     </Canvas>
+  )
+}
+
+/** An invisible box around the main body, so the camera frames it rather than any straps or cables. */
+function BodyFrame({ anatomy }: { anatomy: Anatomy }) {
+  const s = worldScale(anatomy)
+  const { center, size } = bodyBox(anatomy)
+  return (
+    <mesh visible={false} position={center.map(v => v * s) as Vec3} raycast={() => null}>
+      <boxGeometry args={size.map(v => v * s) as Vec3} />
+    </mesh>
   )
 }
 
@@ -236,7 +248,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
   texture.colorSpace = THREE.SRGBColorSpace
   const { photo, pieces, materials } = usePieces(part, s, anatomy, ground, texture)
   const home = useMemo(() => new THREE.Vector3(...part.center_mm).multiplyScalar(s), [part.center_mm, s])
-  const dir = useMemo(() => explodeDirection(part, s, maxLayer), [part, s, maxLayer])
+  const dir = useMemo(() => explodeDirection(part, s, maxLayer, new THREE.Vector3(...bodyBox(anatomy).center).multiplyScalar(s)),
+    [part, s, maxLayer, anatomy])
   const tmp = useMemo(() => ({ pos: new THREE.Vector3(), glow: new THREE.Color() }), [])
   const step = useStaggeredExplode(explode, assembleAt, delay)
   const resting = useMemo(() => materials.map(m => m.opacity), [materials])
@@ -303,6 +316,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       if (focusIds.includes(part.id)) glow = 0.55 + 0.25 * Math.sin(now * 0.004)
       else opacity = 0.45
     }
+    // Accessories are context: they fade as they slide aside so the internals hold the eye.
+    if (part.kind === 'accessory') opacity *= 1 - 0.7 * clamp01(value)
     if (part.id === selectedId) { glow = Math.max(glow, 0.8); tmp.glow.set(playback.kind === 'failure' && part.id === playback.failure.culprit_part_id ? CULPRIT : ACCENT) }
     if (hovered) glow = Math.max(glow, 0.35)
 

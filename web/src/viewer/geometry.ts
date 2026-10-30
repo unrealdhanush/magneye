@@ -2,9 +2,21 @@ import * as THREE from 'three'
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js'
 import type { Anatomy, Ground, MaskMatch, Part, Vec3 } from '../types'
 
-/** World units per millimetre: the object's longest side becomes 2 units. */
+/**
+ * The object's main body in millimetres: every part except accessories (straps, cables, stands), which would
+ * otherwise shrink the interesting part to a corner of the view. Without accessories it is the whole object.
+ */
+export function bodyBox(anatomy: Anatomy): { center: Vec3; size: Vec3 } {
+  const body = anatomy.parts.filter(p => p.kind !== 'accessory')
+  if (!body.length || body.length === anatomy.parts.length) return { center: [0, 0, 0], size: anatomy.object.dimensions_mm }
+  const lo = [0, 1, 2].map(i => Math.min(...body.map(p => p.center_mm[i] - p.size_mm[i] / 2)))
+  const hi = [0, 1, 2].map(i => Math.max(...body.map(p => p.center_mm[i] + p.size_mm[i] / 2)))
+  return { center: lo.map((v, i) => (v + hi[i]) / 2) as Vec3, size: lo.map((v, i) => hi[i] - v) as Vec3 }
+}
+
+/** World units per millimetre: the main body's longest side becomes 2 units. */
 export function worldScale(anatomy: Anatomy): number {
-  return 2 / Math.max(...anatomy.object.dimensions_mm, 1)
+  return 2 / Math.max(...bodyBox(anatomy).size, 1)
 }
 
 export const DEG = Math.PI / 180
@@ -143,9 +155,17 @@ function roundedBox() {
   return g
 }
 
-/** Where each part flies in the exploded view: outer layers travel farthest so the inside opens up. */
-export function explodeDirection(part: Part, s: number, maxLayer: number): THREE.Vector3 {
-  const c = new THREE.Vector3(...part.center_mm).multiplyScalar(s)
+/**
+ * Where each part flies in the exploded view: outer layers travel farthest so the inside opens up. Directions
+ * radiate from the body's centre; accessories slide aside within the photo plane to clear the view.
+ */
+export function explodeDirection(part: Part, s: number, maxLayer: number, bodyCenter: THREE.Vector3): THREE.Vector3 {
+  const c = new THREE.Vector3(...part.center_mm).multiplyScalar(s).sub(bodyCenter)
+  if (part.kind === 'accessory') {
+    c.z = 0
+    if (c.lengthSq() < 1e-4) c.set(0, -1, 0)
+    return c.normalize().multiplyScalar(1.6)
+  }
   const dir = new THREE.Vector3(c.x, c.y, c.z * 2.5)
   if (dir.lengthSq() < 1e-4) dir.set(0, 0, part.kind === 'exterior' ? 1 : 0.4)
   dir.normalize()

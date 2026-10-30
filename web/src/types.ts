@@ -17,7 +17,7 @@ export interface Component {
 export interface Part {
   id: string
   name: string
-  kind: 'exterior' | 'internal'
+  kind: 'exterior' | 'internal' | 'accessory'
   function: string
   material: Material
   shape: Shape
