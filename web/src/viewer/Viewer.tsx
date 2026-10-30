@@ -1,11 +1,13 @@
-import { Bounds, ContactShadows, Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
+import { Bounds, ContactShadows, Html, Line, OrbitControls, PerformanceMonitor, useGLTF, useTexture } from '@react-three/drei'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
+import { EffectComposer, N8AO, SMAA, ToneMapping } from '@react-three/postprocessing'
+import { ToneMappingMode } from 'postprocessing'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
 import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, warpToProfile, worldScale } from './geometry'
-import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_LOOK } from './palette'
+import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_FINISH, MATERIAL_LOOK } from './palette'
 import { isFrontal, photoExtent, photoRotation, spanInPhoto, startCamera } from './pose'
 
 export const REMOVE_MS = 750
@@ -28,15 +30,23 @@ export interface ViewerProps {
 /** Per-part delay between arrivals during assembly; capped so the whole build-up stays around a second. */
 const ASSEMBLE_TOTAL_MS = 900
 const ARRIVAL_FLASH_MS = 320
+// Tone mapping compresses bright values, so glows are driven a little harder to read as clearly as before.
+const GLOW_GAIN = 1.5
+const PULSE = new THREE.Color(EFFECT_GLOW.flow).multiplyScalar(1.6)
 
 /** Registry of each part's moving group, so pulses and labels can find parts in world space. */
 type Registry = Map<string, THREE.Object3D>
 
 export function Viewer(props: ViewerProps) {
   const floor = -(props.anatomy.object.dimensions_mm[1] * worldScale(props.anatomy)) / 2 - 0.5
+  // Full quality until the frame rate drops, then lighter effects at 1x resolution (and back up if it recovers).
+  const [high, setHigh] = useState(true)
   return (
-    <Canvas camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}
+    // flat: no tone mapping in the renderer, since the effects chain applies it once at the end.
+    <Canvas flat camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={high ? [1, 2] : 1} gl={{ antialias: false, alpha: true }}
       onCreated={({ gl }) => { gl.localClippingEnabled = true }} onPointerMissed={() => props.onSelect(null)}>
+      <PerformanceMonitor onIncline={() => setHigh(true)} onDecline={() => setHigh(false)} flipflops={3} onFallback={() => setHigh(false)} />
+      <Effects high={high} />
       <StudioEnvironment />
       <hemisphereLight args={['#ffffff', '#445566', 0.35]} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
@@ -62,6 +72,21 @@ function BodyFrame({ anatomy }: { anatomy: Anatomy }) {
     <mesh visible={false} position={center.map(v => v * s) as Vec3} raycast={() => null}>
       <boxGeometry args={size.map(v => v * s) as Vec3} />
     </mesh>
+  )
+}
+
+/**
+ * Post-processing: ambient occlusion where parts meet and nest, Khronos PBR Neutral tone mapping (made for product
+ * renders: bright whites keep their shading and colours stay true) and SMAA edges. No bloom: lit white plastic is as
+ * bright as a glow, so it would haze the whole object.
+ */
+function Effects({ high }: { high: boolean }) {
+  return (
+    <EffectComposer multisampling={0}>
+      <N8AO aoRadius={0.35} distanceFalloff={0.6} intensity={high ? 2.4 : 1.6} quality={high ? 'medium' : 'performance'} halfRes={!high} />
+      <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+      <SMAA />
+    </EffectComposer>
   )
 }
 
@@ -176,11 +201,12 @@ const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
 
 function surface(material: Material): THREE.MeshStandardMaterial {
   const look = MATERIAL_LOOK[material] ?? MATERIAL_LOOK.other
-  const m = new THREE.MeshStandardMaterial({
+  const finish = MATERIAL_FINISH[material] ?? {}
+  const m = new THREE.MeshPhysicalMaterial({
     color: look.color, metalness: look.metalness, roughness: look.roughness, emissive: ACCENT, emissiveIntensity: 0, transparent: true,
+    ...finish, sheenColor: finish.sheen ? new THREE.Color(look.color).lerp(new THREE.Color('#ffffff'), 0.5) : undefined,
   })
   if (material === 'pcb') { m.map = pcbTexture(); m.color.set('#ffffff') }
-  if (material === 'glass' || material === 'fluid') m.opacity = 0.6
   return m
 }
 
@@ -331,7 +357,7 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
     materials.forEach((m, i) => {
       const target = opacity * resting[i]
       m.emissive.copy(tmp.glow)
-      m.emissiveIntensity += (glow - m.emissiveIntensity) * Math.min(1, dt * 12)
+      m.emissiveIntensity += (glow * GLOW_GAIN - m.emissiveIntensity) * Math.min(1, dt * 12)
       m.opacity += (target - m.opacity) * Math.min(1, dt * 10)
       m.transparent = m.opacity < 0.99
       // Keep writing depth while a part is still clearly visible, so its own walls don't show through each other.
@@ -525,7 +551,7 @@ function ScenarioPath({ scenario, startedAt, registry }: { scenario: Scenario; s
       {points.length > 1 && <Line points={points} color={EFFECT_GLOW.flow} lineWidth={2} transparent opacity={0.7} dashed dashSize={0.04} gapSize={0.03} />}
       <mesh ref={dot} visible={false}>
         <sphereGeometry args={[0.03, 16, 16]} />
-        <meshBasicMaterial color={EFFECT_GLOW.flow} toneMapped={false} />
+        <meshBasicMaterial color={PULSE} toneMapped={false} />
       </mesh>
       <group ref={tag}>
         {!step.done && scenario.steps[step.index] && (

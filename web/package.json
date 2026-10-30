@@ -12,6 +12,8 @@
   "dependencies": {
     "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.2",
+    "@react-three/postprocessing": "3.2.0",
+    "postprocessing": "6.39.5",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "thinking-orbs": "^0.3.2",

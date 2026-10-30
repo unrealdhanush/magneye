@@ -16,6 +16,24 @@ export const MATERIAL_LOOK: Record<Material, { color: string; metalness: number;
   other: { color: '#8e8e93', metalness: 0.2, roughness: 0.5, label: 'Other' },
 }
 
+/**
+ * How each material behaves under light beyond colour and roughness: a clear lacquer on glossy plastics, solder mask
+ * and ceramics, sheen on soft rubber and fabric, light passing through glass and fluids.
+ */
+export const MATERIAL_FINISH: Partial<Record<Material, Partial<{
+  clearcoat: number; clearcoatRoughness: number; sheen: number; sheenRoughness: number; transmission: number; thickness: number; ior: number
+}>>> = {
+  plastic: { clearcoat: 0.5, clearcoatRoughness: 0.3 },
+  ceramic: { clearcoat: 1, clearcoatRoughness: 0.15 },
+  pcb: { clearcoat: 0.35, clearcoatRoughness: 0.4 },
+  battery: { clearcoat: 0.4, clearcoatRoughness: 0.35 },
+  magnet: { clearcoat: 0.3, clearcoatRoughness: 0.3 },
+  rubber: { sheen: 0.5, sheenRoughness: 0.8 },
+  fabric: { sheen: 0.8, sheenRoughness: 0.9 },
+  glass: { transmission: 0.92, thickness: 0.4, ior: 1.5 },
+  fluid: { transmission: 0.75, thickness: 0.6, ior: 1.33 },
+}
+
 export const ACCENT = '#0a84ff'
 export const CULPRIT = '#ff453a'
 export const EFFECT_GLOW = { glow: '#0a84ff', flow: '#64d2ff', heat: '#ff9f0a', light: '#ffd60a' } as const
