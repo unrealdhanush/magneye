@@ -7,7 +7,7 @@ import json
 
 from PIL import Image
 
-from magneye import builder, guide, meta, modeler, views
+from magneye import builder, fit, guide, meta, modeler, views
 from magneye.checks import geometry_issues
 from magneye.ground import SegmentCache
 
@@ -101,6 +101,7 @@ def test_builder_verifies_and_edits(monkeypatch):
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
     monkeypatch.setattr(modeler, "model", _no_modeling)
+    monkeypatch.setattr(fit, "fit", lambda *_a, **_k: None)
     events, emit = _collect()
     photo = _photo()
 
@@ -117,7 +118,7 @@ def test_builder_verifies_and_edits(monkeypatch):
     assert next(p for p in result["parts"] if p["id"] == "stick")["center_mm"] == [0, 20, 20]
     texts = [e.get("text", "") for e in events if e["type"] == "step"]
     assert "SAM 3.1: 1 × “thumbstick”" in texts and "SAM 3.1: no “red button” on the object" in texts
-    assert texts[-1] == "Verified against the photo"
+    assert "Verified against the photo" in texts
     # The layout overlay reached the model as an image right after the tool results.
     second_turn_messages = script.seen[1][0]
     assert second_turn_messages[-1]["role"] == "user" and second_turn_messages[-1]["content"][0]["type"] == "image_url"
@@ -220,6 +221,7 @@ def test_builder_moves_the_body_in_one_call(monkeypatch):
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
     monkeypatch.setattr(modeler, "model", _no_modeling)
+    monkeypatch.setattr(fit, "fit", lambda *_a, **_k: None)
     events, emit = _collect()
     photo = _photo()
     result = asyncio.run(builder.build(image=photo, prompt="", emit=emit, model="m", reasoning="low", cache=SegmentCache(photo)))

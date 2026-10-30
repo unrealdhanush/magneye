@@ -9,7 +9,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from . import meta
+from . import fit, meta
 from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
 
@@ -63,7 +63,8 @@ def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dic
     return M.jpeg(sheet)
 
 
-async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str) -> int:
+async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
+                outline: fit.Outline | None = None) -> int:
     """Run the modeler on `anatomy` in place (recipes go on parts as "model"). Returns how many parts it modeled."""
     parts = {p["id"]: p for p in anatomy["parts"]}
     solids: dict[str, Any] = {}
@@ -100,7 +101,8 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def view_models(_: dict[str, Any]) -> ToolResult:
         sheet = _panels(photo, box, anatomy, solids)
-        return ToolResult("The renders are attached in the next message.", f"Drew {_count(len(solids), 'model')} over the photo",
+        score = f" Overlap with SAM's outline of the object: {fit.coverage(anatomy, outline):.0%} (higher is better)." if outline else ""
+        return ToolResult(f"The renders are attached in the next message.{score}", f"Drew {_count(len(solids), 'model')} over the photo{score and ' · ' + score.split(': ')[1].split(' ')[0] + ' overlap'}",
                           attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}])
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:

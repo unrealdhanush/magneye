@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import meta, modeler, pose, views
+from . import fit, meta, modeler, pose, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches
@@ -259,9 +259,21 @@ async def build(
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "verify", "status": "error",
                     "text": f"Verification stopped ({e}); keeping the latest anatomy"})
+    # Fit the viewpoint and the layout to SAM's outline with numbers before giving the parts their 3D form.
+    outline = fit.Outline.from_match(target)
+    fitted = fit.fit(work, outline)
+    if fitted:
+        text = f"Fitted the viewpoint to SAM's outline: overlap {fitted['before']:.0%} → {fitted['after']:.0%}"
+    else:
+        cover = fit.coverage(work, outline)
+        text = (f"The viewpoint already fits SAM's outline (overlap {cover:.0%})" if cover >= fit.GOOD_ENOUGH
+                else f"Kept the viewpoint; no better fit to SAM's outline was found (overlap {cover:.0%})")
+    await emit({"type": "step", "agent": "builder", "tool": "fit_view", "status": "done", "text": text})
+    if fitted:
+        await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
-        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model)
+        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
