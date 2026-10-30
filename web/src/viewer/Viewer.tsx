@@ -355,6 +355,16 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
         // Bystanders recede once the culprit is revealed so nothing blocks the close-up.
         opacity = elapsed > access_path.length * REMOVE_MS ? 0.12 : 0.3
       }
+    } else if (playback.kind === 'weakpoints') {
+      // The red mask: every common failure point glows red, one after another, while the rest fades back.
+      const k = playback.failures.findIndex(f => f.culprit_part_id === part.id)
+      if (k >= 0) {
+        tmp.glow.set(CULPRIT)
+        const since = now - playback.startedAt - k * 220
+        glow = since < 0 ? 0 : 0.75 + 0.4 * Math.sin(now * 0.006 + k)
+      } else {
+        opacity = 0.16
+      }
     } else if (focusIds.length) {
       if (focusIds.includes(part.id)) glow = 0.55 + 0.25 * Math.sin(now * 0.004)
       else opacity = 0.45
@@ -370,7 +380,7 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       m.emissive.copy(tmp.glow)
       m.emissiveIntensity += (glow * GLOW_GAIN - m.emissiveIntensity) * Math.min(1, dt * 12)
       m.opacity += (target - m.opacity) * Math.min(1, dt * 10)
-      m.transparent = m.opacity < 0.99
+      seeThrough(m)
       // Keep writing depth while a part is still clearly visible, so its own walls don't show through each other.
       m.depthWrite = m.opacity > 0.2
     })
@@ -407,6 +417,11 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
 
 function labelFor(part: Part, playback: Playback, selectedId: string | null, hovered: boolean): { text: string; tone: 'plain' | 'culprit' } | null {
   if (playback.kind === 'failure' && part.id === playback.failure.culprit_part_id) return { text: `Likely culprit · ${part.name}`, tone: 'culprit' }
+  if (playback.kind === 'weakpoints') {
+    const k = playback.failures.findIndex(f => f.culprit_part_id === part.id)
+    // Number and part only: several labels share the view, and the symptoms are in the answer and the list.
+    if (k >= 0) return { text: `${k + 1} · ${part.name}`, tone: 'culprit' }
+  }
   // Scenario step labels are drawn by ScenarioPath, which re-renders as steps advance.
   if (part.id === selectedId || hovered) return { text: part.name, tone: 'plain' }
   return null
@@ -420,11 +435,23 @@ function shellOpacity(explode: number, xray: boolean, playback: Playback, modele
   return 1 - clamp01((explode - 0.2) / 0.5) * (modeled ? 0.9 : 0.65)
 }
 
+/**
+ * Blend a material only while it is see-through. three.js compiles a material that starts solid with alpha forced
+ * to 1 and doesn't recompile on its own, so switching needs needsUpdate (only on the switch, which is rare).
+ */
+function seeThrough(m: THREE.Material) {
+  const blend = m.opacity < 0.99
+  if (m.transparent !== blend) {
+    m.transparent = blend
+    m.needsUpdate = true
+  }
+}
+
 function useShellFade(materials: THREE.Material[], target: () => number) {
   useFrame((_, dt) => {
     for (const m of materials) {
       m.opacity += (target() - m.opacity) * Math.min(1, dt * 8)
-      m.transparent = m.opacity < 0.99
+      seeThrough(m)
       m.depthWrite = m.opacity > 0.3
       // Skip drawing a faded-out shell entirely: its overlapping walls otherwise streak across the internals.
       m.visible = m.opacity > 0.02

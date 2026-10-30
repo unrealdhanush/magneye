@@ -16,6 +16,8 @@
     "postprocessing": "6.39.5",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "thinking-orbs": "^0.3.2",
     "three": "^0.186.1"
   },

@@ -102,11 +102,16 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
 
   const play = (s: Scenario) => { setPlayback({ kind: 'scenario', scenario: s, startedAt: performance.now() }); setFocusIds([]) }
   const show = (f: Failure) => { setPlayback({ kind: 'failure', failure: f, startedAt: performance.now() }); setFocusIds([]); setSelectedId(null) }
+  const markAll = (fs: Failure[]) => {
+    setPlayback({ kind: 'weakpoints', failures: fs, startedAt: performance.now() }); setFocusIds([]); setSelectedId(null)
+    setExplode(e => Math.max(e, 0.35))
+  }
 
   const act = useCallback((a: ViewerAction) => {
     if (a.type === 'highlight') { setPlayback({ kind: 'idle' }); setFocusIds(a.part_ids); setExplode(e => Math.max(e, 0.45)) }
     else if (a.type === 'play_scenario') play(a.scenario)
     else if (a.type === 'show_failure') show(a.failure)
+    else if (a.type === 'mark_failures') markAll(a.failures)
     else if (a.type === 'explode') setExplode(a.amount)
   }, [])
 
@@ -303,7 +308,8 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
           {anatomy && <div className="order-1"><ObjectCard anatomy={anatomy} /></div>}
           {selected && <div className="order-4"><PartDetail part={selected} onClose={() => setSelectedId(null)} /></div>}
           {anatomy && <div className="order-5"><ScenarioList scenarios={anatomy.scenarios} activeId={activeScenario} onPlay={play} /></div>}
-          {anatomy && <div className="order-6"><FailureList failures={anatomy.failures} parts={anatomy.parts} activeId={activeFailure} onShow={show} /></div>}
+          {anatomy && <div className="order-6"><FailureList failures={anatomy.failures} parts={anatomy.parts} activeId={activeFailure} onShow={show}
+            allShown={playback.kind === 'weakpoints'} onShowAll={() => markAll(anatomy.failures)} /></div>}
         </div>
         <div className="contents 3xl:sticky 3xl:top-0 3xl:block 3xl:space-y-3">
           <div className="order-2"><Conversation turns={turns} busy={asking} onReply={ask} /></div>

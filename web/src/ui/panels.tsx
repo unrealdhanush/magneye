@@ -4,6 +4,7 @@ import { startRecording, type Recorder } from '../audio'
 import type { Agent, Anatomy, Failure, Ground, Part, Scenario } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
 import { IconArrow, IconCheck, IconChevron, IconMic, IconPlay, IconStop, IconWarn } from './icons'
+import { Markdown } from './Markdown'
 
 /** One row of the agent trace: a tool call with its live status, or a note the agent wrote between turns. */
 export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'done' | 'error' | 'note'; text?: string }
@@ -34,6 +35,7 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   verify: { label: 'Verify', model: 'Muse Wonder', orb: 'solving' },
   side_profile: { label: 'Trace the side profile', model: 'SAM 3.1', orb: 'shaping' },
   move_parts: { label: 'Move the body', model: 'Muse Wonder', orb: 'shaping' },
+  mark_failures: { label: 'Mark weak points', model: 'viewer', orb: 'working' },
   place_in_photo: { label: 'Place parts as seen', model: 'Muse Wonder', orb: 'shaping' },
   model_parts: { label: 'Model parts in 3D', model: 'Wonder · Manifold', orb: 'shaping' },
   view_models: { label: 'Check models vs photo', model: 'Muse Wonder', orb: 'searching' },
@@ -261,7 +263,7 @@ export function AskBar({ disabled, onAsk, onTranscribe }: { disabled: boolean; o
       setListening('transcribing')
       try {
         const text = await onTranscribe(await rec.stop())
-        setQ(text)
+        // A heard question is asked straight away, so the box stays clear; an empty result leaves it as it was.
         if (text) onAsk(text)
       } catch (e) { setMicError(e instanceof Error ? e.message : String(e)) }
       setRec(null); setListening('idle')
@@ -271,7 +273,7 @@ export function AskBar({ disabled, onAsk, onTranscribe }: { disabled: boolean; o
   }
 
   return (
-    <form className="space-y-1" onSubmit={e => { e.preventDefault(); if (q.trim()) onAsk(q.trim()) }}>
+    <form className="space-y-1" onSubmit={e => { e.preventDefault(); if (q.trim()) { onAsk(q.trim()); setQ('') } }}>
       <label htmlFor="ask" className="text-headline text-ink">Ask about it</label>
       <div className="flex gap-1">
         <input id="ask" value={q} onChange={e => setQ(e.target.value)} disabled={disabled}
@@ -304,7 +306,7 @@ export function Conversation({ turns, onReply, busy }: { turns: Turn[]; onReply:
       ) : (
         <div key={i} className={`glass edge space-y-1 rounded-lg p-1.5 ${t.role === 'question' ? 'me-2' : ''}`}>
           <p className="font-mono text-caption2 uppercase tracking-wider text-muted">{t.role === 'question' ? 'Guide asks' : 'Guide'}</p>
-          <p className="text-body text-ink">{t.text}</p>
+          <Markdown text={t.text} />
           {t.role === 'question' && t === last && !!t.options?.length && (
             <div className="flex flex-wrap gap-1">
               {t.options.map(o => (
@@ -344,12 +346,20 @@ export function ScenarioList({ scenarios, activeId, onPlay }: { scenarios: Scena
 
 const LIKELIHOOD = { common: 'bg-red/10 text-red-text', occasional: 'bg-orange/10 text-orange-text', rare: 'bg-ink/5 text-muted' } as const
 
-export function FailureList({ failures, parts, activeId, onShow }: { failures: Failure[]; parts: Part[]; activeId: string | null; onShow: (f: Failure) => void }) {
+export function FailureList({ failures, parts, activeId, onShow, allShown, onShowAll }: {
+  failures: Failure[]; parts: Part[]; activeId: string | null; onShow: (f: Failure) => void; allShown: boolean; onShowAll: () => void
+}) {
   if (!failures.length) return null
   const name = (id: string) => parts.find(p => p.id === id)?.name ?? id
   return (
     <section aria-labelledby="fail" className="space-y-1">
-      <h3 id="fail" className="text-headline text-ink">When it goes wrong</h3>
+      <div className="flex items-center gap-1">
+        <h3 id="fail" className="flex-1 text-headline text-ink">When it goes wrong</h3>
+        <button type="button" onClick={onShowAll} aria-pressed={allShown}
+          className={`press inline-flex min-h-tap items-center gap-1 rounded-sm px-1.5 text-subheadline ${allShown ? 'bg-red/15 text-red-text' : 'text-red-text hover:bg-red/10'}`}>
+          <IconWarn className="h-2.5 w-2.5" /> Show all weak points
+        </button>
+      </div>
       <ul className="space-y-1">
         {failures.map(f => (
           <li key={f.id}>

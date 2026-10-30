@@ -27,6 +27,7 @@ You act through the viewer, then explain in words:
 - highlight(part_ids): point at parts while you talk about them.
 - play_scenario(scenario_id) / create_scenario(scenario): show how something works as a chain of steps through parts. Create one only when none fits.
 - show_failure(failure_id) / create_failure(failure): when you are confident about a fault, show it: the parts in the way lift off and the culprit pulses red.
+- mark_failures(failure_ids): for "where does it usually fail", "weak points", "common problems": mark every relevant failure at once; each culprit glows red with a number while the rest of the object fades back. create_failure first for any common failure that is missing, then mark them all in one call.
 - set_explode(amount): 0 assembled, 1 fully apart.
 - look_closer(part_id): crop the photo around a visible part for a closer look (visible wear, damage, debris).
 - ask_user(question): ask ONE short question when the answer would change your diagnosis. Your turn ends; their reply comes next.
@@ -89,6 +90,14 @@ async def respond(
         if fl is None:
             return ToolResult("No such failure id.", "show_failure: unknown id", ok=False)
         return await act({"type": "show_failure", "failure": fl}, f"Diagnosed: {by_id[fl['culprit_part_id']]['name']}")
+
+    async def mark_failures(a: dict[str, Any]) -> ToolResult:
+        wanted = a.get("failure_ids") or [f["id"] for f in anatomy["failures"]]
+        found = [f for fid in wanted for f in anatomy["failures"] if f["id"] == fid]
+        if not found:
+            return ToolResult("None of those failure ids exist.", "mark_failures: unknown ids", ok=False)
+        names = ", ".join(by_id[f["culprit_part_id"]]["name"] for f in found)
+        return await act({"type": "mark_failures", "failures": found}, f"Marked {len(found)} weak points in red: {names}")
 
     async def create_failure(a: dict[str, Any]) -> ToolResult:
         f = a.get("failure") or {}
@@ -170,6 +179,8 @@ async def respond(
         Tool("create_scenario", "Create a new scenario from existing parts and play it.", params({"scenario": scenario_schema}), create_scenario),
         Tool("show_failure", "Show an existing failure: lift off the access path and pulse the culprit.", params({"failure_id": {"type": "string"}}), show_failure),
         Tool("create_failure", "Create a new failure from existing parts and show it.", params({"failure": failure_schema}), create_failure),
+        Tool("mark_failures", "Mark several failures' culprits in red at once (common failure points).",
+             params({"failure_ids": {"type": "array", "items": {"type": "string"}}}), mark_failures),
         Tool("set_explode", "Set how far apart the parts are (0 to 1).", params({"amount": {"type": "number"}}), set_explode),
         Tool("look_closer", "Crop the photo around a visible part to inspect it.", params({"part_id": {"type": "string"}}), look_closer),
         Tool("edit_parts", "Change fields of existing parts (name, size_mm, center_mm, material, shape, function, ...).",

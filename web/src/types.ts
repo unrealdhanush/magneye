@@ -115,6 +115,7 @@ export type ViewerAction =
   | { type: 'highlight'; part_ids: string[] }
   | { type: 'play_scenario'; scenario: Scenario; created?: boolean }
   | { type: 'show_failure'; failure: Failure; created?: boolean }
+  | { type: 'mark_failures'; failures: Failure[] }
   | { type: 'explode'; amount: number }
 
 /** Events streamed by the builder and guide agents. */
@@ -148,3 +149,5 @@ export type Playback =
   | { kind: 'idle' }
   | { kind: 'scenario'; scenario: Scenario; startedAt: number }
   | { kind: 'failure'; failure: Failure; startedAt: number }
+  /** Every common failure point at once: culprits glow red and numbered, the rest fades back. */
+  | { kind: 'weakpoints'; failures: Failure[]; startedAt: number }

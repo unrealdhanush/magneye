@@ -363,3 +363,17 @@ def test_modeler_can_move_parts_and_fix_the_viewpoint(monkeypatch):
     battery = next(p for p in anatomy["parts"] if p["id"] == "battery")
     assert battery["center_mm"] == [0, -40, 0] and battery["size_mm"] == [14, 60, 14]
     assert anatomy["object"]["camera"] == {"azimuth_deg": 10.0, "elevation_deg": 30.0, "roll_deg": 0.0}
+
+
+def test_guide_marks_every_weak_point_at_once(monkeypatch):
+    anatomy = copy.deepcopy(ANATOMY)
+    photo = _photo()
+    script = Script([{"content": "", "tool_calls": [_call("mark_failures", {"failure_ids": ["drift", "dirt", "ghost"]})]},
+                     {"content": "The **stick module** and the **cap** are where it usually fails."}])
+    monkeypatch.setattr(meta, "chat", script)
+    events, emit = _collect()
+    asyncio.run(guide.respond(anatomy=anatomy, messages=guide.opening_messages(anatomy, photo), prompt="where does it usually fail?",
+                              image=photo, cache=SegmentCache(photo), emit=emit, model="m", ground=None))
+    action = next(e["action"] for e in events if e["type"] == "action")
+    assert action["type"] == "mark_failures" and [f["culprit_part_id"] for f in action["failures"]] == ["pots", "stick"]
+    assert events[-1]["text"].startswith("The **stick module**")
