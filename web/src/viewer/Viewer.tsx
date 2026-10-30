@@ -1,9 +1,10 @@
-import { Bounds, Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
+import { Bounds, ContactShadows, Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
-import type { Anatomy, Ground, Part, Playback, Scenario } from '../types'
-import { DEG, explodeDirection, partShape, silhouetteShell, worldScale } from './geometry'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
+import { DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_LOOK } from './palette'
 
 export const REMOVE_MS = 750
@@ -25,12 +26,15 @@ export interface ViewerProps {
 type Registry = Map<string, THREE.Object3D>
 
 export function Viewer(props: ViewerProps) {
+  const floor = -(props.anatomy.object.dimensions_mm[1] * worldScale(props.anatomy)) / 2 - 0.5
   return (
     <Canvas camera={{ position: [3.4, 2.1, 5], fov: 38 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}
       onPointerMissed={() => props.onSelect(null)}>
-      <hemisphereLight args={['#ffffff', '#445566', 1.1]} />
-      <directionalLight position={[3, 5, 4]} intensity={1.6} />
-      <directionalLight position={[-4, -2, -3]} intensity={0.5} color="#88aaff" />
+      <StudioEnvironment />
+      <hemisphereLight args={['#ffffff', '#445566', 0.35]} />
+      <directionalLight position={[3, 5, 4]} intensity={1.1} />
+      <directionalLight position={[-4, -2, -3]} intensity={0.35} color="#88aaff" />
+      <ContactShadows position={[0, floor, 0]} scale={9} blur={2.6} far={4} opacity={0.5} resolution={512} />
       <Suspense fallback={null}>
         {/* Frame the assembled object once; explode/playback then move parts within that view. */}
         <Bounds fit clip margin={1.9}>
@@ -40,6 +44,19 @@ export function Viewer(props: ViewerProps) {
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={1.2} maxDistance={12} />
     </Canvas>
   )
+}
+
+/** Soft studio reflections generated on the GPU (no HDR download), so metal and plastic read correctly. */
+function StudioEnvironment() {
+  const gl = useThree(st => st.gl)
+  const scene = useThree(st => st.scene)
+  useEffect(() => {
+    const pmrem = new THREE.PMREMGenerator(gl)
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    scene.environment = env
+    return () => { scene.environment = null; env.dispose(); pmrem.dispose() }
+  }, [gl, scene])
+  return null
 }
 
 function Scene(p: ViewerProps) {
@@ -88,8 +105,11 @@ function CameraDirector({ playback, registry, anatomy, s }: { playback: Playback
         const obj = registry.get(playback.failure.culprit_part_id)
         if (!obj || !culprit) return
         const target = obj.getWorldPosition(new THREE.Vector3())
-        // Keep the current viewing angle; come in close enough that the culprit fills a good part of the view.
-        const dir = camera.position.clone().sub(controls.target).normalize()
+        // Look in along the culprit's way out (the side its access path lifted off), blended with the current
+        // view so the move feels continuous; come in close enough that it fills a good part of the view.
+        const view = camera.position.clone().sub(controls.target).normalize()
+        const out = target.clone().setZ(target.z + 0.5).normalize()
+        const dir = view.add(out.multiplyScalar(1.5)).normalize()
         const size = Math.max(...culprit.size_mm) * s
         fly(target.clone().addScaledVector(dir, Math.min(Math.max(size * 12, 1.4), 2.6)), target)
       }, wait)
@@ -128,19 +148,71 @@ export function scenarioCursor(scenario: Scenario, elapsed: number) {
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
 
-function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect }:
+function surface(material: Material): THREE.MeshStandardMaterial {
+  const look = MATERIAL_LOOK[material] ?? MATERIAL_LOOK.other
+  const m = new THREE.MeshStandardMaterial({
+    color: look.color, metalness: look.metalness, roughness: look.roughness, emissive: ACCENT, emissiveIntensity: 0, transparent: true,
+  })
+  if (material === 'pcb') { m.map = pcbTexture(); m.color.set('#ffffff') }
+  if (material === 'glass' || material === 'fluid') m.opacity = 0.6
+  return m
+}
+
+/** One drawable piece of a part, positioned relative to the part's centre. */
+interface Piece { geometry: THREE.BufferGeometry; scale: Vec3; axis: THREE.Euler; position: Vec3; rotation: Vec3; material: THREE.Material | THREE.Material[] }
+
+/**
+ * How a part is drawn, best source first: its own SAM 3.1 outline extruded with the photo on its face
+ * (visible parts), then the model's multi-primitive description, then its single primitive.
+ */
+function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | null, texture: THREE.Texture) {
+  return useMemo(() => {
+    const match = part.grounded ? ground?.parts[part.id] : undefined
+    const home = new THREE.Vector3(...part.center_mm).multiplyScalar(s)
+    if (match && ground) {
+      const z0 = (part.center_mm[2] - part.size_mm[2] / 2) * s, z1 = (part.center_mm[2] + part.size_mm[2] / 2) * s
+      const g = extrudeMask(maskShapes(match, anatomy, ground), anatomy, ground, z0, z1, [FACE.back, FACE.photo])
+      if (g) {
+        g.translate(-home.x, -home.y, -home.z)
+        const tone = texture.image ? maskColor(texture.image as HTMLImageElement, match) : new THREE.Color('#3a3a3c')
+        const mats = [
+          new THREE.MeshStandardMaterial({ map: texture, roughness: 0.45, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
+          new THREE.MeshStandardMaterial({ color: tone, roughness: 0.5, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
+          new THREE.MeshStandardMaterial({ color: tone.clone().multiplyScalar(0.5), roughness: 0.8, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
+          new THREE.MeshStandardMaterial({ color: tone, roughness: 0.5, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
+        ]
+        return { photo: true, pieces: [{ geometry: g, scale: [1, 1, 1] as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: mats }], materials: mats }
+      }
+    }
+    const comps = (part.components ?? []).filter(c => c.size_mm?.length === 3 && c.offset_mm?.length === 3)
+    const specs = comps.length
+      ? comps.map(c => ({ shape: c.shape, size_mm: c.size_mm, material: c.material ?? part.material, offset: c.offset_mm, rot: c.rotation_deg ?? [0, 0, 0] }))
+      : [{ shape: part.shape, size_mm: part.size_mm, material: part.material, offset: [0, 0, 0], rot: [0, 0, 0] }]
+    const materials: THREE.MeshStandardMaterial[] = []
+    const pieces: Piece[] = specs.map(c => {
+      const sh = partShape({ shape: c.shape, size_mm: c.size_mm as Vec3 }, s)
+      const m = surface(c.material as Material)
+      materials.push(m)
+      return { geometry: sh.geometry, scale: sh.scale, axis: sh.axis, position: c.offset.map(v => v * s) as Vec3,
+        rotation: c.rot.map(d => d * DEG) as Vec3, material: m }
+    })
+    return { photo: false, pieces, materials }
+  }, [part, s, anatomy, ground, texture])
+}
+
+function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl }:
   ViewerProps & { part: Part; s: number; maxLayer: number; registry: Registry }) {
   const mover = useRef<THREE.Group>(null)
   const spinner = useRef<THREE.Group>(null)
-  const material = useRef<THREE.MeshStandardMaterial>(null)
   const [hovered, setHovered] = useState(false)
-  const shape = useMemo(() => partShape(part, s), [part, s])
+  const texture = useTexture(imageUrl)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const { photo, pieces, materials } = usePieces(part, s, anatomy, ground, texture)
   const home = useMemo(() => new THREE.Vector3(...part.center_mm).multiplyScalar(s), [part.center_mm, s])
   const dir = useMemo(() => explodeDirection(part, s, maxLayer), [part, s, maxLayer])
-  const look = MATERIAL_LOOK[part.material] ?? MATERIAL_LOOK.other
-  const base = useMemo(() => new THREE.Color(look.color), [look.color])
   const tmp = useMemo(() => ({ pos: new THREE.Vector3(), glow: new THREE.Color() }), [])
   const eased = useRef(explode)
+  const resting = useMemo(() => materials.map(m => m.opacity), [materials])
 
   useEffect(() => {
     const g = mover.current
@@ -149,8 +221,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
   }, [part.id, registry])
 
   useFrame((_, dt) => {
-    const g = mover.current, m = material.current, sp = spinner.current
-    if (!g || !m || !sp) return
+    const g = mover.current, sp = spinner.current
+    if (!g || !sp) return
     const now = performance.now()
     // Ease toward the slider so explode changes glide instead of jumping.
     eased.current += (explode - eased.current) * Math.min(1, dt * 8)
@@ -167,7 +239,7 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
         const st = steps[mine], w = Math.sin(progress * Math.PI)
         switch (st.effect) {
           case 'press': tmp.pos.addScaledVector(dir.clone().normalize(), -0.06 * w); glow = 0.8; break
-          case 'rotate': sp.rotation.y = progress * Math.PI * 2; glow = 0.6; break
+          case 'rotate': sp.rotation.z = progress * Math.PI * 2; glow = 0.6; break
           case 'slide': tmp.pos.x += 0.07 * w; glow = 0.6; break
           case 'vibrate': tmp.pos.x += Math.sin(now * 0.09) * 0.012; tmp.pos.y += Math.cos(now * 0.11) * 0.012; glow = 0.7; break
           case 'heat': tmp.glow.set(EFFECT_GLOW.heat); glow = 0.4 + 0.6 * w; break
@@ -195,7 +267,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
         tmp.pos.addScaledVector(dir.clone().normalize(), e * 1.6)
         opacity = 1 - 0.85 * e
       } else {
-        opacity = 0.3
+        // Bystanders recede once the culprit is revealed so nothing blocks the close-up.
+        opacity = elapsed > access_path.length * REMOVE_MS ? 0.12 : 0.3
       }
     } else if (focusIds.length) {
       if (focusIds.includes(part.id)) glow = 0.55 + 0.25 * Math.sin(now * 0.004)
@@ -205,31 +278,37 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
     if (hovered) glow = Math.max(glow, 0.35)
 
     g.position.lerp(tmp.pos, Math.min(1, dt * 10))
-    m.emissive.copy(tmp.glow)
-    m.emissiveIntensity += (glow - m.emissiveIntensity) * Math.min(1, dt * 12)
-    m.opacity += (opacity - m.opacity) * Math.min(1, dt * 10)
-    m.transparent = m.opacity < 0.99
-    m.depthWrite = m.opacity > 0.6
+    materials.forEach((m, i) => {
+      const target = opacity * resting[i]
+      m.emissive.copy(tmp.glow)
+      m.emissiveIntensity += (glow - m.emissiveIntensity) * Math.min(1, dt * 12)
+      m.opacity += (target - m.opacity) * Math.min(1, dt * 10)
+      m.transparent = m.opacity < 0.99
+      // Keep writing depth while a part is still clearly visible, so its own walls don't show through each other.
+      m.depthWrite = m.opacity > 0.2
+    })
   })
 
   const label = labelFor(part, playback, selectedId, hovered)
   return (
-    <group ref={mover} position={home}>
-      <group rotation={part.rotation_deg.map(d => d * DEG) as [number, number, number]}>
-        <group rotation={shape.axis}>
-          <group ref={spinner}>
-            <mesh geometry={shape.geometry} scale={shape.scale}
-              onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(part.id) }}
-              onPointerOver={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
-              onPointerOut={() => { setHovered(false); document.body.style.cursor = '' }}>
-              <meshStandardMaterial ref={material} color={base} metalness={look.metalness} roughness={look.roughness}
-                emissive={ACCENT} emissiveIntensity={0} transparent opacity={1} />
-            </mesh>
-          </group>
+    <group ref={mover} position={home}
+      onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(part.id) }}
+      onPointerOver={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
+      onPointerOut={() => { setHovered(false); document.body.style.cursor = '' }}>
+      {/* Photo pieces are already in the photo's front-view orientation, so the model's rotation does not apply. */}
+      <group rotation={photo ? [0, 0, 0] : part.rotation_deg.map(d => d * DEG) as [number, number, number]}>
+        <group ref={spinner}>
+          {pieces.map((pc, i) => (
+            <group key={i} position={pc.position} rotation={pc.rotation}>
+              <group rotation={pc.axis}>
+                <mesh geometry={pc.geometry} scale={pc.scale} material={pc.material} />
+              </group>
+            </group>
+          ))}
         </group>
       </group>
       {label && (
-        <Html position={[0, Math.max(...shape.scale) * 0.6 + 0.06, 0]} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+        <Html position={[0, Math.max(...part.size_mm) * s * 0.6 + 0.06, 0]} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
           <div className={`-translate-x-1/2 -translate-y-full whitespace-nowrap rounded-sm px-1 py-px font-mono text-caption shadow-ring ${label.tone === 'culprit' ? 'bg-red-text text-white' : 'bg-card text-ink'}`}>
             {label.text}
           </div>
@@ -246,11 +325,11 @@ function labelFor(part: Part, playback: Playback, selectedId: string | null, hov
   return null
 }
 
-/** Shell opacity: solid when assembled, fading as the object opens, faint while a scenario or failure plays. */
+/** Shell opacity: solid when assembled, thinning as the halves part, hidden while a scenario or failure plays. */
 function shellOpacity(explode: number, xray: boolean, playback: Playback) {
   if (playback.kind !== 'idle') return 0
   if (xray) return 0.14
-  return Math.max(0.06, 1 - explode * 2.2)
+  return 1 - clamp01((explode - 0.2) / 0.5) * 0.65
 }
 
 function useShellFade(materials: THREE.Material[], target: number) {
@@ -258,25 +337,56 @@ function useShellFade(materials: THREE.Material[], target: number) {
     for (const m of materials) {
       m.opacity += (target - m.opacity) * Math.min(1, dt * 8)
       m.transparent = m.opacity < 0.99
-      m.depthWrite = m.opacity > 0.9
+      m.depthWrite = m.opacity > 0.3
       // Skip drawing a faded-out shell entirely: its overlapping walls otherwise streak across the internals.
       m.visible = m.opacity > 0.02
     }
   })
 }
 
+/**
+ * The photographed object as a 3D shell: SAM 3.1's outline extruded to Wonder's depth estimate with the photo on
+ * the front. It is cut into a front and a back half that pull apart along the depth axis as the object explodes,
+ * like a real teardown.
+ */
 function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback }:
   { anatomy: Anatomy; ground: Ground; imageUrl: string; explode: number; xray: boolean; playback: Playback }) {
   const texture = useTexture(imageUrl)
   texture.colorSpace = THREE.SRGBColorSpace
-  const geometry = useMemo(() => silhouetteShell(anatomy, ground), [anatomy, ground])
-  const materials = useMemo(() => [
-    new THREE.MeshStandardMaterial({ map: texture, roughness: 0.55, transparent: true, side: THREE.DoubleSide }),
-    new THREE.MeshStandardMaterial({ color: '#9aa3b2', roughness: 0.5, metalness: 0.1, transparent: true }),
-  ], [texture])
+  const s = worldScale(anatomy)
+  const depth = anatomy.object.dimensions_mm[2] * s
+  const halves = useMemo(() => {
+    if (!ground.object) return null
+    const shapes = maskShapes(ground.object, anatomy, ground)
+    const front = extrudeMask(shapes, anatomy, ground, 0, depth / 2, [FACE.cut, FACE.photo])
+    const back = extrudeMask(shapes, anatomy, ground, -depth / 2, 0, [FACE.back, FACE.cut])
+    return front && back ? { front, back } : null
+  }, [anatomy, ground, depth])
+  const materials = useMemo(() => {
+    const tone = ground.object && texture.image ? maskColor(texture.image as HTMLImageElement, ground.object) : new THREE.Color('#3a3a3c')
+    return [
+      new THREE.MeshStandardMaterial({ map: texture, roughness: 0.5, transparent: true }),
+      new THREE.MeshStandardMaterial({ color: tone, roughness: 0.55, transparent: true }),
+      new THREE.MeshStandardMaterial({ color: tone.clone().multiplyScalar(0.45), roughness: 0.85, transparent: true, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ color: tone, roughness: 0.55, transparent: true }),
+    ]
+  }, [texture, ground.object])
+  const front = useRef<THREE.Mesh>(null), back = useRef<THREE.Mesh>(null)
+  const eased = useRef(explode)
   useShellFade(materials, shellOpacity(explode, xray, playback))
-  if (!geometry) return null
-  return <mesh geometry={geometry} material={materials} renderOrder={10} raycast={() => null} />
+  useFrame((_, dt) => {
+    eased.current += (explode - eased.current) * Math.min(1, dt * 8)
+    const gap = eased.current * 1.8
+    if (front.current) front.current.position.z = gap
+    if (back.current) back.current.position.z = -gap
+  })
+  if (!halves) return null
+  return (
+    <group>
+      <mesh ref={front} geometry={halves.front} material={materials} renderOrder={10} raycast={() => null} />
+      <mesh ref={back} geometry={halves.back} material={materials} renderOrder={10} raycast={() => null} />
+    </group>
+  )
 }
 
 function MeshShell({ url, anatomy, explode, xray, playback }:

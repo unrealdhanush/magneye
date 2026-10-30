@@ -5,6 +5,15 @@ export type Material =
 export type Shape = 'box' | 'rounded_box' | 'cylinder' | 'sphere' | 'capsule' | 'disc' | 'ring' | 'cone' | 'plate' | 'coil'
 export type Effect = 'press' | 'rotate' | 'slide' | 'vibrate' | 'glow' | 'flow' | 'heat' | 'light'
 
+/** One primitive of a part drawn as several shapes; offset is from the part's centre. */
+export interface Component {
+  shape: Shape
+  material: Material
+  size_mm: Vec3
+  offset_mm: Vec3
+  rotation_deg: Vec3
+}
+
 export interface Part {
   id: string
   name: string
@@ -18,6 +27,7 @@ export interface Part {
   layer: number
   sam_prompt: string | null
   confidence: number
+  components?: Component[]
   grounded?: boolean
 }
 

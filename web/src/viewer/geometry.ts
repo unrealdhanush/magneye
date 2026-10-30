@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js'
-import type { Anatomy, Ground, Part, Vec3 } from '../types'
+import type { Anatomy, Ground, MaskMatch, Part, Vec3 } from '../types'
 
 /** World units per millimetre: the object's longest side becomes 2 units. */
 export function worldScale(anatomy: Anatomy): number {
@@ -50,7 +50,7 @@ function helix(radius: number, length: number, tube: number) {
 }
 
 /** Primitive geometry for a part, sized in world units. */
-export function partShape(part: Part, s: number): PartShape {
+export function partShape(part: Pick<Part, 'shape' | 'size_mm'>, s: number): PartShape {
   const size = part.size_mm.map(v => Math.max(v, 0.5) * s) as Vec3
   const ident = new THREE.Euler()
   switch (part.shape) {
@@ -119,27 +119,22 @@ export function explodeDirection(part: Part, s: number, maxLayer: number): THREE
   return dir.multiplyScalar(reach)
 }
 
-/**
- * The photographed silhouette (SAM 3.1 mask) extruded to Wonder's depth estimate, with the photo
- * projected onto the front and back faces. Returns null when grounding found no object.
- */
-export function silhouetteShell(anatomy: Anatomy, ground: Ground): THREE.ExtrudeGeometry | null {
+/** A SAM 3.1 mask outline as shapes in world units, in the object's frame (photo = front view). */
+export function maskShapes(match: MaskMatch, anatomy: Anatomy, ground: Ground): THREE.Shape[] {
   const obj = ground.object
-  if (!obj?.mask_svg) return null
-  const [dw, dh, dd] = anatomy.object.dimensions_mm
+  if (!obj || !match.mask_svg) return []
+  const [dw, dh] = anatomy.object.dimensions_mm
   const s = worldScale(anatomy)
   const [left, top, right, bottom] = obj.box
-  const [ml, mt, mr, mb] = obj.mask_bounds
-  const [mw, mh] = obj.mask_size
-  const [iw, ih] = ground.image_size
+  const [ml, mt, mr, mb] = match.mask_bounds
+  const [mw, mh] = match.mask_size
   const ow = right - left, oh = bottom - top
-
   // mask-local pixel -> image pixel -> object millimetres -> world units
   const toWorld = (u: number, v: number) => {
     const px = ml + u * ((mr - ml) / mw), py = mt + v * ((mb - mt) / mh)
     return new THREE.Vector2(((px - left) / ow - 0.5) * dw * s, (0.5 - (py - top) / oh) * dh * s)
   }
-  const svg = new SVGLoader().parse(`<svg xmlns="http://www.w3.org/2000/svg"><path d="${obj.mask_svg}"/></svg>`)
+  const svg = new SVGLoader().parse(`<svg xmlns="http://www.w3.org/2000/svg"><path d="${match.mask_svg}"/></svg>`)
   const shapes: THREE.Shape[] = []
   for (const path of svg.paths) {
     for (const shape of SVGLoader.createShapes(path)) {
@@ -150,14 +145,28 @@ export function silhouetteShell(anatomy: Anatomy, ground: Ground): THREE.Extrude
       shapes.push(mapped)
     }
   }
-  if (!shapes.length) return null
   // Keep the big pieces only: tiny islands are mask noise.
   const area = (sh: THREE.Shape) => Math.abs(THREE.ShapeUtils.area(sh.getPoints()))
-  const biggest = Math.max(...shapes.map(area))
-  const kept = shapes.filter(sh => area(sh) > biggest * 0.02)
+  const biggest = Math.max(0, ...shapes.map(area))
+  return shapes.filter(sh => area(sh) > biggest * 0.02)
+}
 
-  const depth = dd * s
-  const bevel = Math.min(depth * 0.25, 0.08)
+/** Material slots of a mask extrusion. */
+export const FACE = { photo: 0, side: 1, cut: 2, back: 3 } as const
+
+/**
+ * Extrude mask shapes between two depths (world units), mapping the photo onto the faces.
+ * Lids get their own material slots: `lids[0]` for the face at zFrom, `lids[1]` for the face at zTo.
+ */
+export function extrudeMask(shapes: THREE.Shape[], anatomy: Anatomy, ground: Ground, zFrom: number, zTo: number,
+  lids: [number, number]): THREE.ExtrudeGeometry | null {
+  const obj = ground.object
+  if (!obj || !shapes.length) return null
+  const [dw, dh] = anatomy.object.dimensions_mm
+  const s = worldScale(anatomy)
+  const [left, top, right, bottom] = obj.box
+  const [iw, ih] = ground.image_size
+  const ow = right - left, oh = bottom - top
   const toUV = (x: number, y: number) => {
     const px = left + (x / (dw * s) + 0.5) * ow, py = top + (0.5 - y / (dh * s)) * oh
     return new THREE.Vector2(px / iw, 1 - py / ih)
@@ -168,11 +177,77 @@ export function silhouetteShell(anatomy: Anatomy, ground: Ground): THREE.Extrude
     generateSideWallUV: (_g: THREE.ExtrudeGeometry, v: number[], a: number, b: number, c: number, d: number) =>
       [a, b, c, d].map(i => toUV(v[i * 3], v[i * 3 + 1])),
   }
-  const g = new THREE.ExtrudeGeometry(kept, {
-    depth: Math.max(depth - 2 * bevel, 0.01), bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel * 0.6,
-    bevelSegments: 5, curveSegments: 4, UVGenerator: uvGenerator,
+  const depth = Math.max(zTo - zFrom, 0.004)
+  const bevel = Math.min(depth * 0.2, 0.04)
+  const g = new THREE.ExtrudeGeometry(shapes, {
+    depth: Math.max(depth - 2 * bevel, 0.002), bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel * 0.5,
+    bevelSegments: 4, curveSegments: 4, UVGenerator: uvGenerator,
   })
-  g.translate(0, 0, -depth / 2 + bevel)
+  // three.js puts both lids in one group per shape (the zFrom lid first, then the zTo lid); split them.
+  const groups = g.groups.map(gr => ({ ...gr }))
+  g.clearGroups()
+  for (const gr of groups) {
+    if (gr.materialIndex === 0) {
+      const half = gr.count / 2
+      g.addGroup(gr.start, half, lids[0])
+      g.addGroup(gr.start + half, half, lids[1])
+    } else g.addGroup(gr.start, gr.count, FACE.side)
+  }
+  g.translate(0, 0, zFrom + bevel)
   g.computeVertexNormals()
   return g
+}
+
+/** Average photo colour inside a mask: used for side walls and cut faces so they match the object. */
+export function maskColor(image: CanvasImageSource & { width: number; height: number }, match: MaskMatch): THREE.Color {
+  const [ml, mt, mr, mb] = match.mask_bounds
+  const w = Math.max(1, Math.round(mr - ml)), h = Math.max(1, Math.round(mb - mt))
+  const scale = Math.min(1, 96 / Math.max(w, h))
+  const cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = cw; canvas.height = ch
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return new THREE.Color('#8e8e93')
+  ctx.save()
+  ctx.scale(cw / match.mask_size[0], ch / match.mask_size[1])
+  ctx.clip(new Path2D(match.mask_svg))
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.drawImage(image, ml, mt, mr - ml, mb - mt, 0, 0, cw, ch)
+  ctx.restore()
+  const px = ctx.getImageData(0, 0, cw, ch).data
+  let r = 0, g = 0, b = 0, n = 0
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] < 128) continue
+    r += px[i]; g += px[i + 1]; b += px[i + 2]; n++
+  }
+  return n ? new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace) : new THREE.Color('#8e8e93')
+}
+
+let pcb: THREE.CanvasTexture | null = null
+/** A procedural circuit-board surface (traces, pads, vias), generated once. */
+export function pcbTexture(): THREE.CanvasTexture {
+  if (pcb) return pcb
+  const c = document.createElement('canvas')
+  c.width = c.height = 256
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#16794a'; ctx.fillRect(0, 0, 256, 256)
+  let seed = 7
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+  ctx.strokeStyle = '#c9a54a'; ctx.lineWidth = 2; ctx.lineCap = 'round'
+  for (let i = 0; i < 40; i++) {
+    let x = rnd() * 256, y = rnd() * 256
+    ctx.beginPath(); ctx.moveTo(x, y)
+    for (let k = 0; k < 3; k++) {
+      if (rnd() < 0.5) x += (rnd() - 0.5) * 120; else y += (rnd() - 0.5) * 120
+      ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+    ctx.fillStyle = '#e3c26a'; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.fillStyle = '#1b1b1d'
+  for (let i = 0; i < 6; i++) ctx.fillRect(rnd() * 220, rnd() * 220, 18 + rnd() * 20, 12 + rnd() * 14)
+  pcb = new THREE.CanvasTexture(c)
+  pcb.colorSpace = THREE.SRGBColorSpace
+  pcb.wrapS = pcb.wrapT = THREE.RepeatWrapping
+  return pcb
 }
