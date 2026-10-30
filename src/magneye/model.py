@@ -32,6 +32,8 @@ OPS_DOC = """Recipe nodes (JSON). Every node may also have "at": [x, y, z] (move
 - {"op": "box", "size": [x, y, z], "radius": r}: a box centred on its origin; radius rounds every edge and corner (0 for sharp).
 - {"op": "cylinder", "d": d, "h": h, "axis": "x"|"y"|"z", "d2": top_d}: a cylinder along the axis (default z); d2 makes it a cone or frustum.
 - {"op": "sphere", "d": d}
+- {"op": "torus", "d": d, "w": w, "axis": ...}: a smooth ring (a tyre, a halo, an O-ring): outer diameter d, round cross-section w thick, facing along the axis.
+- {"op": "tube", "points": [[x, y, z], ...], "d": d}: a smooth round tube through the points (a cable, a handle, a grip that tapers: give "d" as one diameter per point). The way to sculpt organic one-piece bodies.
 - {"op": "gear", "d": d, "h": h, "teeth": n, "axis": ...}: a spur gear.
 - {"op": "extrude", "polygon": [[a, b], ...], "h": h, "axis": ...}: a 2D outline (in the plane across the axis) pushed out h, centred.
 - {"op": "revolve", "profile": [[r, t], ...], "axis": ...}: a profile of radius r against position t along the axis, spun round it (knobs, lenses, bottles, cups).
@@ -142,6 +144,27 @@ class _Builder:
             return _to_axis(Manifold.cylinder(h, d / 2, d2 / 2, SEGMENTS, True), axis)
         if op == "sphere":
             return Manifold.sphere(_num(node, "d") / 2, SEGMENTS)
+        if op == "torus":
+            d, w = _num(node, "d"), _num(node, "w")
+            if w >= d:
+                raise RecipeError("torus: w must be less than d")
+            r_tube, r_mid = w / 2, d / 2 - w / 2
+            section = [[r_mid + r_tube * math.cos(a), r_tube * math.sin(a)] for a in (2 * math.pi * i / 24 for i in range(24))]
+            return _to_axis(CrossSection([section]).revolve(64), axis)
+        if op == "tube":
+            pts = node.get("points")
+            if not (isinstance(pts, list) and len(pts) >= 2 and all(isinstance(q, (list, tuple)) and len(q) == 3 for q in pts)):
+                raise RecipeError("tube: points needs at least two [x, y, z]")
+            ds = node.get("d")
+            ds = ds if isinstance(ds, list) else [ds] * len(pts)
+            if len(ds) != len(pts):
+                raise RecipeError("tube: give one diameter, or one per point")
+            balls = [Manifold.sphere(_num({"op": "tube", "d": dd}, "d") / 2, 32).translate([float(c) for c in q]) for q, dd in zip(pts, ds)]
+            # Each stretch is the hull of the balls at its ends; together they make one smooth, tapering tube.
+            out = Manifold.batch_hull([balls[0], balls[1]])
+            for a, b in zip(balls[1:], balls[2:]):
+                out = out + Manifold.batch_hull([a, b])
+            return out
         if op == "gear":
             d, h = _num(node, "d"), _num(node, "h")
             teeth = int(min(max(_num(node, "teeth", 18, lo=4), 4), 120))

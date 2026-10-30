@@ -9,7 +9,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from . import fit, meta
+from . import fit, mates, meta
 from .checks import geometry_issues
 from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
@@ -17,6 +17,8 @@ from .agent import Emit, Tool, ToolResult, params, run_loop
 MODELER_SYSTEM = f"""You are Magneye's modeler. The anatomy of the object in the photo is verified, but its parts are still plain primitives. Give the parts that define how the object looks and works a real 3D form, as geometry recipes.
 
 What to model, in this order: every exterior part (its rounded edges and corners, and the hollows, openings and cut-outs it really has: wells, ports, grilles, holes, buttons, seams), accessories, then the main internal mechanisms (gears with teeth, springs, motors, lenses, speaker drivers, cells). Skip parts under about 3 mm and anything that really is a plain box or cylinder already.
+
+Sculpt, don't stack: where the real object is one moulded body (a controller's grip running into its faceplate and ring, a mouse shell, a bottle), model that body as one smooth continuous shape: tubes and tori along its centre lines, hulls of spheres for bulges, then shell it and cut its openings. Rings and halos are tori, not polygons. Seams belong where the real part splits, not between your primitives.
 
 {M.OPS_DOC}
 
@@ -27,9 +29,10 @@ Tools:
 - view_models(): see your work: the photo, your parts drawn over the photo exactly where the camera would see them, and the internals on their own.
 - place_parts(updates): fix where parts are and how big they are (center_mm, size_mm, rotation_deg), in the object's own frame. Use it when the overlay shows parts offset, too small or large, turned the wrong way, or not nested the way they really are (LEDs inside the ring they light, a cell inside its holder, a board inside its shell).
 - set_camera(azimuth_deg, elevation_deg, roll_deg): correct the photo's viewpoint if the whole model sits turned against the photo.
+- {mates.DOC}
 - finish(summary).
 
-The overlay is the test: when you are done, the parts should cover the object in the photo, each where it really is.
+The overlay is the test: when you are done, the parts should cover the object in the photo, each where it really is, and fit together the way they are assembled (use mate_parts rather than nudging positions by hand).
 
 Work in at most three turns:
 1. model_parts for every part you will model, and view_models in the same turn.
@@ -127,6 +130,19 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         return ToolResult(json.dumps({"placed": done, "rejected": unknown}),
                           f"Moved or resized {_count(len(done), 'part')}" if done else "No parts placed", ok=bool(done))
 
+    async def mate_parts(a: dict[str, Any]) -> ToolResult:
+        done, failed = [], []
+        for m in a.get("mates", []):
+            try:
+                done.append(mates.apply(parts, m))
+                anatomy.setdefault("mates", []).append({k: m[k] for k in ("part", "to", "type", "face", "axis", "direction", "at") if k in m})
+            except mates.MateError as e:
+                failed.append({"mate": m, "error": str(e)})
+        if done:
+            await emit({"type": "anatomy", "anatomy": anatomy})
+        return ToolResult(json.dumps({"done": done, "failed": failed}),
+                          f"Fitted {_count(len(done), 'part')} together" + (f"; {len(failed)} to fix" if failed else ""), ok=bool(done))
+
     async def set_camera(a: dict[str, Any]) -> ToolResult:
         try:
             cam = {k: float(a[k]) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}
@@ -148,6 +164,11 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
                                                                     "size_mm": {"type": "array", "items": {"type": "number"}},
                                                                     "rotation_deg": {"type": "array", "items": {"type": "number"}},
                                                                     "reason": {"type": "string"}}, ["id", "reason"])}}), place_parts),
+        Tool("mate_parts", "Fit parts together: inside, on a face, coaxial, touching, or meshed gears. Moves `part` onto `to`.",
+             params({"mates": {"type": "array", "items": params({
+                 "part": {"type": "string"}, "to": {"type": "string"}, "type": {"type": "string", "enum": list(mates.TYPES)},
+                 "face": {"type": "string"}, "axis": {"type": "string"}, "direction": {"type": "string"},
+                 "at": {"type": "array", "items": {"type": "number"}}}, ["part", "to", "type"])}}), mate_parts),
         Tool("set_camera", "Correct where the photo was taken from.",
              params({"azimuth_deg": {"type": "number"}, "elevation_deg": {"type": "number"}, "roll_deg": {"type": "number"}}), set_camera),
         Tool("finish", "Finish modeling.", params({"summary": {"type": "string"}}), finish),

@@ -42,6 +42,7 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   place_parts: { label: 'Fit parts to the photo', model: 'Muse Wonder', orb: 'shaping' },
   fit_view: { label: 'Fit the viewpoint', model: 'SAM 3.1 · fit', orb: 'solving' },
   set_camera: { label: 'Correct the viewpoint', model: 'Muse Wonder', orb: 'solving' },
+  mate_parts: { label: 'Fit parts together', model: 'Muse Wonder', orb: 'shaping' },
   clean_photo: { label: 'Clear what covers it', model: 'SAM 3.1 · Muse Image', orb: 'shaping' },
   thought: { label: 'Thinking', model: 'Muse Wonder', orb: 'solving' },
   error: { label: 'Error', model: '', orb: 'working' },

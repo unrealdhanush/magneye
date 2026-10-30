@@ -75,3 +75,13 @@ def test_outlines_follow_the_blueprint_views():
     # Front shows x by y with the through-hole as a second contour; top x by depth; right depth by y.
     assert len(o["front"]) == 2 and (span(o["front"], 0), span(o["front"], 1)) == (60, 45)
     assert (span(o["top"], 0), span(o["top"], 1)) == (60, 22) and (span(o["right"], 0), span(o["right"], 1)) == (22, 45)
+
+
+def test_torus_and_tube_sculpt_smooth_bodies():
+    halo = M.build({"op": "torus", "d": 100, "w": 16, "axis": "y"})
+    assert list(_bounds(halo)) == [100, 16, 100]
+    grip = M.build({"op": "tube", "points": [[0, 40, 0], [0, 0, 5], [0, -40, 0]], "d": [36, 32, 26]})
+    w, h, d = _bounds(grip)
+    assert 35 < w <= 36.5 and 100 < h < 112
+    with pytest.raises(M.RecipeError, match="one per point"):
+        M.build({"op": "tube", "points": [[0, 0, 0], [0, 10, 0]], "d": [5, 5, 5]})
