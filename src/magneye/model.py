@@ -225,12 +225,27 @@ def arrays(solid: Manifold) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(mesh.vert_properties, dtype=np.float32)[:, :3], np.asarray(mesh.tri_verts, dtype=np.uint32)
 
 
+# Turns that lay each blueprint view's axes onto the drawing plane: front (x, y), top (x, -z), right (-z, y).
+VIEW_TURNS = {"front": [0, 0, 0], "top": [90, 0, 0], "right": [0, -90, 0]}
+
+
+def outlines(solid: Manifold) -> dict[str, list[list[list[float]]]]:
+    """The solid's silhouette in each blueprint view, as polygons in that view's (u, v) millimetres; through-holes
+    come out as inner contours."""
+    out = {}
+    for view, turn in VIEW_TURNS.items():
+        polys = solid.rotate(turn).project().simplify(0.15).to_polygons()
+        out[view] = [[[round(float(x), 2), round(float(y), 2)] for x, y in poly] for poly in polys]
+    return out
+
+
 def encode(solid: Manifold) -> dict[str, Any]:
-    """A solid for the viewer: base64 float32 positions and uint32 indices, plus its bounds in millimetres."""
+    """A solid for the viewer: base64 float32 positions and uint32 indices, its bounds in millimetres, and its
+    silhouettes for the blueprint."""
     v, t = arrays(solid)
     lo, hi = v.min(axis=0), v.max(axis=0)
     return {"positions": base64.b64encode(v.tobytes()).decode(), "indices": base64.b64encode(t.tobytes()).decode(),
-            "min": [round(float(x), 3) for x in lo], "max": [round(float(x), 3) for x in hi]}
+            "min": [round(float(x), 3) for x in lo], "max": [round(float(x), 3) for x in hi], "outlines": outlines(solid)}
 
 
 def fitted(part: dict[str, Any], v: np.ndarray) -> np.ndarray:

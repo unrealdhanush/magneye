@@ -107,6 +107,23 @@ function zigzag(cx: number, cy: number, w: number, h: number, alongU: boolean) {
   }).join(' ')
 }
 
+/**
+ * A modeled part's real silhouette in a view: the recipe's projected outline, fitted to the part's size and place
+ * the same way the 3D view fits its mesh. Through-holes come out as inner contours.
+ */
+export function outlineGlyphs(view: View, part: Part, outline: { min: Vec3; max: Vec3; polygons: [number, number][][] },
+  toSheet: (u: number, v: number) => [number, number]): Glyph[] {
+  const fit = (a: { axis: 0 | 1 | 2; sign: 1 | -1 }, raw: number) => {
+    const i = a.axis, span = Math.max(outline.max[i] - outline.min[i], 1e-6), mid = (outline.max[i] + outline.min[i]) / 2
+    return a.sign * (part.center_mm[i] + (a.sign * raw - mid) * (part.size_mm[i] / span))
+  }
+  const d = outline.polygons.map(poly => poly.map(([u, v], k) => {
+    const [x, y] = toSheet(fit(view.u, u), fit(view.v, v))
+    return `${k ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`
+  }).join(' ') + ' Z').join(' ')
+  return d ? [{ kind: 'path', d }] : []
+}
+
 /** The extent the drawing has to show: the object's stated size, grown to cover any part that pokes out. */
 export function extent(anatomy: Anatomy): { min: Vec3; max: Vec3 } {
   const half = anatomy.object.dimensions_mm.map(d => d / 2)

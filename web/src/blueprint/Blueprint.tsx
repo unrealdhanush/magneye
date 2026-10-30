@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Anatomy, Part, Vec3 } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
-import { extent, glyphs, pieces, VIEWS, type Glyph, type View, type ViewName } from './draw'
+import type { PartOutline } from '../viewer/models'
+import { extent, glyphs, outlineGlyphs, pieces, VIEWS, type Glyph, type View, type ViewName } from './draw'
 
 interface Box { x0: number; x1: number; y0: number; y1: number }
 /** A sheet layout: the drawing area for the three views, the parts list and the title block, in sheet units. */
@@ -66,8 +67,10 @@ function Shape({ g, draw, className, style }: { g: Glyph; draw: boolean; classNa
  * centre lines), overall dimensions, a numbered balloon per part, the parts list and a title block. Hovering or
  * picking a part highlights it in every view and the list; the selection is shared with the 3D space.
  */
-export function Blueprint({ anatomy, selectedId, onSelect, onMove, sessionId, sheet = LANDSCAPE }: {
+export function Blueprint({ anatomy, selectedId, onSelect, onMove, sessionId, outlines, sheet = LANDSCAPE }: {
   anatomy: Anatomy; selectedId: string | null; onSelect: (id: string | null) => void; sessionId: string; sheet?: Sheet
+  /** Real silhouettes of modeled parts; other parts are drawn from their shape. */
+  outlines?: Map<string, PartOutline>
   /** Drag a selected part in any view to move it; `key` groups one drag into a single undo step. */
   onMove?: (id: string, center: Vec3, key: string) => void
 }) {
@@ -165,7 +168,10 @@ export function Blueprint({ anatomy, selectedId, onSelect, onMove, sessionId, sh
           {[...parts.filter(p => p.id !== selectedId), ...parts.filter(p => p.id === selectedId)].map((p, pi) => {
             const hidden = p.kind === 'internal'
             const d = delay(0.15 + vi * 0.15 + Math.min(pi * 0.02, 0.4))
-            const box = pieces(p).flatMap(pc => glyphs(pv.view, pc.shape, pc.center, pc.size, pv.toSheet, k))
+            const real = outlines?.get(p.id)
+            const box = real?.views[pv.view.name]?.length
+              ? outlineGlyphs(pv.view, p, { min: real.min, max: real.max, polygons: real.views[pv.view.name] }, pv.toSheet)
+              : pieces(p).flatMap(pc => glyphs(pv.view, pc.shape, pc.center, pc.size, pv.toSheet, k))
             const hit = glyphs(pv.view, 'box', p.center_mm, p.size_mm, pv.toSheet, k)[0] as Extract<Glyph, { kind: 'rect' }>
             return (
               <g key={p.id} className={`bp-part ${hidden ? 'is-hidden' : ''} ${state(p.id)} ${onMove && p.id === selectedId ? 'is-movable' : ''}`}
@@ -277,7 +283,7 @@ function Dimension({ x1, y1, x2, y2, offset, text, vertical }:
 /** The sheet in whichever orientation wastes less of the space it is given, re-checked as that space resizes. */
 export function FittedBlueprint(props: {
   anatomy: Anatomy; selectedId: string | null; onSelect: (id: string | null) => void; sessionId: string
-  onMove?: (id: string, center: Vec3, key: string) => void
+  onMove?: (id: string, center: Vec3, key: string) => void; outlines?: Map<string, PartOutline>
 }) {
   const box = useRef<HTMLDivElement>(null)
   const [portrait, setPortrait] = useState(false)

@@ -316,13 +316,17 @@ class Ask(BaseModel):
     prompt: str
 
 
+MODELS_FORMAT = "2"  # 2: with blueprint outlines
+
+
 @app.get("/api/sessions/{sid}/models")
 def session_models(sid: str) -> dict[str, Any]:
     """Meshes of the parts that have geometry recipes, built by Manifold and cached until a recipe changes."""
     d = _session_dir(sid)
     anatomy = _read_json(d / "anatomy.json") or {"parts": []}
     recipes = {p["id"]: p["model"] for p in anatomy["parts"] if p.get("model")}
-    key = hashlib.sha256(json.dumps(recipes, sort_keys=True).encode()).hexdigest()[:16]
+    # The format version is part of the key, so meshes cached before a format change are rebuilt.
+    key = hashlib.sha256((MODELS_FORMAT + json.dumps(recipes, sort_keys=True)).encode()).hexdigest()[:16]
     cached = _read_json(d / "models.json")
     if cached and cached.get("key") == key:
         return cached

@@ -236,7 +236,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         {anatomy ? (
           <Viewer anatomy={anatomy} ground={ground} imageUrl={session.image_url} meshUrl={meshUrl} explode={explode} xray={xray}
             playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} paused={paused}
-            models={models} />
+            models={models.meshes} />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <img src={session.image_url} alt="" className="max-h-[60%] max-w-[60%] rounded-md opacity-60" />
@@ -265,7 +265,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
             className={`blueprint-layer absolute inset-0 bg-[#153e78] p-1 pt-8 ${space === 'blueprint' ? 'is-active' : ''}`}>
             {/* Keyed by visit, so the sheet draws itself again each time the space opens. */}
             {visits > 0 && <FittedBlueprint key={visits} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} sessionId={sid}
-              onMove={editor.movePart} />}
+              onMove={editor.movePart} outlines={models.outlines} />}
             {selected && space === 'blueprint' && (
               <div className="absolute inset-x-1 bottom-[72px] max-h-[60%] overflow-y-auto sm:inset-x-auto sm:bottom-auto sm:right-2 sm:top-[72px] sm:max-h-[calc(100%-160px)]">
                 <Inspector part={selected} onEdit={editor.editPart} onClose={() => setSelectedId(null)}

@@ -65,3 +65,13 @@ def test_render_and_encode():
     assert M.render(anatomy, solids, internals=True).getpixel((280, 280)) != (21, 24, 31)
     enc = M.encode(solids["case"])
     assert enc["max"] == [30.0, 22.5, 11.0] and len(enc["positions"]) > 100
+
+
+def test_outlines_follow_the_blueprint_views():
+    solid = M.build({"op": "difference", "of": [{"op": "box", "size": [60, 45, 22], "radius": 6},
+                                               {"op": "cylinder", "d": 10, "h": 40, "axis": "z", "at": [-15, 5, 0]}]})
+    o = M.outlines(solid)
+    span = lambda polys, i: round(max(p[i] for poly in polys for p in poly) - min(p[i] for poly in polys for p in poly))
+    # Front shows x by y with the through-hole as a second contour; top x by depth; right depth by y.
+    assert len(o["front"]) == 2 and (span(o["front"], 0), span(o["front"], 1)) == (60, 45)
+    assert (span(o["top"], 0), span(o["top"], 1)) == (60, 22) and (span(o["right"], 0), span(o["right"], 1)) == (22, 45)
