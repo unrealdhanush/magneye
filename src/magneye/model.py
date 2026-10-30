@@ -259,11 +259,10 @@ def _box(part: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     return arrays(Manifold.cube(part["size_mm"], True).translate(part["center_mm"]))
 
 
-def render(anatomy: dict[str, Any], solids: dict[str, Manifold], *, internals: bool = False, size: int = 560,
-           view: tuple[float, float, float] | None = None) -> Image.Image:
-    """A flat-shaded orthographic render of the parts (modeled ones as built, the rest as their boxes), from the
-    photo's viewpoint unless `view` (azimuth, elevation, roll) is given. With `internals`, outer parts are left out
-    so the mechanisms show. Triangles are painted back to front."""
+def _shaded(anatomy: dict[str, Any], solids: dict[str, Manifold], internals: bool,
+            view: tuple[float, float, float] | None) -> tuple[np.ndarray, np.ndarray]:
+    """Camera-facing triangles of the parts in the view's frame (x right, y up, z toward the camera; mm), with
+    their shaded colours. Modeled parts as built, the rest as their boxes; `internals` leaves outer parts out."""
     camera = dict(zip(("azimuth_deg", "elevation_deg", "roll_deg"), view)) if view else anatomy["object"].get("camera") or {}
     rot = np.array(pose.rotation({"object": {"camera": camera}}), dtype=np.float32)
     tris, colours = [], []
@@ -275,30 +274,56 @@ def render(anatomy: dict[str, Any], solids: dict[str, Manifold], *, internals: b
             v = fitted(p, v)
         else:
             v, t = _box(p)
-        vv = v @ rot.T
-        tris.append(vv[t])
+        tris.append((v @ rot.T)[t])
         colours.append(np.repeat(np.array([COLOUR.get(p["material"], COLOUR["other"])], dtype=np.float32), len(t), axis=0))
-    im = Image.new("RGB", (size, size), (21, 24, 31))
     if not tris:
-        return im
+        return np.zeros((0, 3, 3), np.float32), np.zeros((0, 3), np.float32)
     tri, col = np.concatenate(tris), np.concatenate(colours)
     normal = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normal /= np.linalg.norm(normal, axis=1, keepdims=True) + 1e-9
-    keep = normal[:, 2] > 0  # facing the camera
-    tri, col, normal = tri[keep], col[keep], normal[keep]
+    keep = normal[:, 2] > 0
     light = np.array([0.35, 0.55, 0.75], dtype=np.float32)
     light /= np.linalg.norm(light)
-    shade = 0.35 + 0.65 * np.clip(normal @ light, 0, 1)
+    shade = 0.35 + 0.65 * np.clip(normal[keep] @ light, 0, 1)
+    return tri[keep], np.clip(col[keep] * shade[:, None], 0, 255)
+
+
+def _paint(draw: ImageDraw.ImageDraw, tri: np.ndarray, col: np.ndarray, xy: np.ndarray, alpha: int | None = None) -> None:
+    """Painter's algorithm: farthest triangles first."""
+    for i in np.argsort(tri[:, :, 2].mean(axis=1)):
+        c = tuple(int(x) for x in col[i])
+        draw.polygon([tuple(p) for p in xy[i]], fill=c + ((alpha,) if alpha is not None else ()))
+
+
+def render(anatomy: dict[str, Any], solids: dict[str, Manifold], *, internals: bool = False, size: int = 560,
+           view: tuple[float, float, float] | None = None) -> Image.Image:
+    """A flat-shaded orthographic render of the parts, fitted to a square image, from the photo's viewpoint unless
+    `view` (azimuth, elevation, roll) is given."""
+    im = Image.new("RGB", (size, size), (21, 24, 31))
+    tri, col = _shaded(anatomy, solids, internals, view)
+    if not len(tri):
+        return im
     lo, hi = tri[..., :2].reshape(-1, 2).min(axis=0), tri[..., :2].reshape(-1, 2).max(axis=0)
     k = (size - 40) / max(float((hi - lo).max()), 1e-6)
     xy = np.empty_like(tri[..., :2])
     xy[..., 0] = 20 + (tri[..., 0] - lo[0]) * k + (size - 40 - (hi[0] - lo[0]) * k) / 2
     xy[..., 1] = 20 + (hi[1] - tri[..., 1]) * k + (size - 40 - (hi[1] - lo[1]) * k) / 2
-    draw = ImageDraw.Draw(im)
-    for i in np.argsort(tri[:, :, 2].mean(axis=1)):
-        c = tuple(int(x) for x in np.clip(col[i] * shade[i], 0, 255))
-        draw.polygon([tuple(p) for p in xy[i]], fill=c)
+    _paint(ImageDraw.Draw(im), tri, col, xy)
     return im
+
+
+def overlay(anatomy: dict[str, Any], solids: dict[str, Manifold], photo: Image.Image, box: list[float]) -> Image.Image:
+    """The parts drawn over the photo where the camera would see them: through the photo's viewpoint and the
+    object's box in the photo, the same mapping SAM grounding uses. Misplaced or missized parts show as offsets."""
+    tri, col = _shaded(anatomy, solids, False, None)
+    span = pose.photo_extent(anatomy)
+    ow, oh = box[2] - box[0], box[3] - box[1]
+    xy = np.empty_like(tri[..., :2])
+    xy[..., 0] = box[0] + (tri[..., 0] / span[0] + 0.5) * ow
+    xy[..., 1] = box[1] + (0.5 - tri[..., 1] / span[1]) * oh
+    layer = Image.new("RGBA", photo.size, (0, 0, 0, 0))
+    _paint(ImageDraw.Draw(layer), tri, col, xy, alpha=150)
+    return Image.alpha_composite(photo.convert("RGBA"), layer).convert("RGB")
 
 
 def jpeg(im: Image.Image) -> bytes:

@@ -37,6 +37,8 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   place_in_photo: { label: 'Place parts as seen', model: 'Muse Wonder', orb: 'shaping' },
   model_parts: { label: 'Model parts in 3D', model: 'Wonder · Manifold', orb: 'shaping' },
   view_models: { label: 'Check models vs photo', model: 'Muse Wonder', orb: 'searching' },
+  place_parts: { label: 'Fit parts to the photo', model: 'Muse Wonder', orb: 'shaping' },
+  set_camera: { label: 'Correct the viewpoint', model: 'Muse Wonder', orb: 'solving' },
   clean_photo: { label: 'Clear what covers it', model: 'SAM 3.1 · Muse Image', orb: 'shaping' },
   thought: { label: 'Thinking', model: 'Muse Wonder', orb: 'solving' },
   error: { label: 'Error', model: '', orb: 'working' },

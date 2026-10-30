@@ -344,3 +344,20 @@ def test_modeler_builds_checks_and_fixes(monkeypatch):
     assert any("axis must be" in r.get("error", "") for r in first_report)
     assert script.seen[1][0][-1]["content"][0]["type"] == "image_url"
     assert any(e.get("text") == "Built 1 part with Manifold; 1 to fix" for e in events)
+
+
+def test_modeler_can_move_parts_and_fix_the_viewpoint(monkeypatch):
+    anatomy = copy.deepcopy(ANATOMY)
+    script = Script([
+        {"content": "", "tool_calls": [
+            _call("place_parts", {"updates": [{"id": "battery", "center_mm": [0, -40, 0], "size_mm": [14, 60, 14], "reason": "fill the grip"},
+                                              {"id": "battery", "size_mm": [0, 1, 1], "reason": "bad"}]}),
+            _call("set_camera", {"azimuth_deg": 10, "elevation_deg": 30, "roll_deg": 0}, 1),
+            _call("finish", {"summary": "ok"}, 2)]},
+    ])
+    monkeypatch.setattr(meta, "chat", script)
+    events, emit = _collect()
+    asyncio.run(modeler.model(anatomy=anatomy, photo=_photo(), box=[100, 100, 300, 500], emit=emit, model_id="m"))
+    battery = next(p for p in anatomy["parts"] if p["id"] == "battery")
+    assert battery["center_mm"] == [0, -40, 0] and battery["size_mm"] == [14, 60, 14]
+    assert anatomy["object"]["camera"] == {"azimuth_deg": 10.0, "elevation_deg": 30.0, "roll_deg": 0.0}

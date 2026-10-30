@@ -23,12 +23,17 @@ A recipe is in millimetres around the part's own centre, in the object's axes (x
 
 Tools:
 - model_parts(models): build recipes for several parts in one call; each reports its built size against the part's and any error to fix.
-- view_models(): see your work: the photo, your parts rendered from the photo's viewpoint, and the internals on their own.
+- view_models(): see your work: the photo, your parts drawn over the photo exactly where the camera would see them, and the internals on their own.
+- place_parts(updates): fix where parts are and how big they are (center_mm, size_mm, rotation_deg), in the object's own frame. Use it when the overlay shows parts offset, too small or large, turned the wrong way, or not nested the way they really are (LEDs inside the ring they light, a cell inside its holder, a board inside its shell).
+- set_camera(azimuth_deg, elevation_deg, roll_deg): correct the photo's viewpoint if the whole model sits turned against the photo.
 - finish(summary).
 
-Work in at most two turns:
+The overlay is the test: when you are done, the parts should cover the object in the photo, each where it really is.
+
+Work in at most three turns:
 1. model_parts for every part you will model, and view_models in the same turn.
-2. Fix errors and anything the render shows is off with one model_parts call for just those parts, and call finish in that same turn."""
+2. Fix what the overlay shows: set_camera if everything is turned, place_parts for parts in the wrong place or size, model_parts for shapes that are wrong; then view_models again in the same turn.
+3. Final touches if needed, and finish."""
 
 
 def _count(n: int, one: str) -> str:
@@ -36,15 +41,18 @@ def _count(n: int, one: str) -> str:
 
 
 def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dict[str, Any]) -> bytes:
-    """The photo of the object beside the models seen the same way, and the internals from a three-quarter view."""
+    """The photo of the object, the models drawn over it where the camera would see them, and the internals from
+    a three-quarter view."""
     size = 420
     im = Image.open(io.BytesIO(photo)).convert("RGB")
     pad = 0.08 * max(box[2] - box[0], box[3] - box[1])
-    crop = im.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad)))
+    region = (max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad))
+    crop, over = im.crop(region), M.overlay(anatomy, solids, im, box).crop(region)
     crop.thumbnail((size, size))
+    over.thumbnail((size, size))
     cam = anatomy["object"].get("camera") or {}
     three_quarter = (float(cam.get("azimuth_deg") or 0) + 35, float(cam.get("elevation_deg") or 0) + 20, 0.0)
-    tiles = [("Photo", crop), ("Your models, as photographed", M.render(anatomy, solids, size=size)),
+    tiles = [("Photo", crop), ("Your models over the photo", over),
              ("Internals", M.render(anatomy, solids, internals=True, size=size, view=three_quarter))]
     sheet = Image.new("RGB", (size * 3 + 32, size + 28), (12, 14, 18))
     draw = ImageDraw.Draw(sheet)
@@ -92,8 +100,33 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def view_models(_: dict[str, Any]) -> ToolResult:
         sheet = _panels(photo, box, anatomy, solids)
-        return ToolResult("The renders are attached in the next message.", f"Rendered {_count(len(solids), 'model')} beside the photo",
-                          attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your models from the photo's viewpoint (unmodeled parts as boxes). Right: the internals."}])
+        return ToolResult("The renders are attached in the next message.", f"Drew {_count(len(solids), 'model')} over the photo",
+                          attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}])
+
+    async def place_parts(a: dict[str, Any]) -> ToolResult:
+        done, unknown = [], []
+        for u in a.get("updates", []):
+            part = parts.get(u.get("id", ""))
+            fields = {k: u[k] for k in ("center_mm", "size_mm", "rotation_deg")
+                      if isinstance(u.get(k), list) and len(u[k]) == 3 and all(isinstance(x, (int, float)) for x in u[k])}
+            if part is None or not fields or ("size_mm" in fields and min(fields["size_mm"]) <= 0):
+                unknown.append(u.get("id"))
+                continue
+            part.update(fields)
+            done.append(part["id"])
+        if done:
+            await emit({"type": "anatomy", "anatomy": anatomy})
+        return ToolResult(json.dumps({"placed": done, "rejected": unknown}),
+                          f"Moved or resized {_count(len(done), 'part')}" if done else "No parts placed", ok=bool(done))
+
+    async def set_camera(a: dict[str, Any]) -> ToolResult:
+        try:
+            cam = {k: float(a[k]) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}
+        except (KeyError, TypeError, ValueError):
+            return ToolResult("Give azimuth_deg, elevation_deg and roll_deg as numbers.", "set_camera rejected", ok=False)
+        anatomy["object"]["camera"] = cam
+        await emit({"type": "anatomy", "anatomy": anatomy})
+        return ToolResult("ok", f"Viewpoint now {cam['azimuth_deg']:g}° around, {cam['elevation_deg']:g}° up, {cam['roll_deg']:g}° rolled")
 
     async def finish(a: dict[str, Any]) -> ToolResult:
         return ToolResult("ok", str(a.get("summary", "Modeled")), stop=True)
@@ -101,7 +134,14 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
     recipe_list = {"type": "array", "items": params({"id": {"type": "string"}, "recipe": {"type": "object"}})}
     tools = [
         Tool("model_parts", "Build geometry recipes for several parts.", params({"models": recipe_list}), model_parts),
-        Tool("view_models", "Render your models beside the photo.", params({}), view_models),
+        Tool("view_models", "Draw your models over the photo, and the internals.", params({}), view_models),
+        Tool("place_parts", "Move, resize or turn parts (object frame, mm and degrees).",
+             params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, "center_mm": {"type": "array", "items": {"type": "number"}},
+                                                                    "size_mm": {"type": "array", "items": {"type": "number"}},
+                                                                    "rotation_deg": {"type": "array", "items": {"type": "number"}},
+                                                                    "reason": {"type": "string"}}, ["id", "reason"])}}), place_parts),
+        Tool("set_camera", "Correct where the photo was taken from.",
+             params({"azimuth_deg": {"type": "number"}, "elevation_deg": {"type": "number"}, "roll_deg": {"type": "number"}}), set_camera),
         Tool("finish", "Finish modeling.", params({"summary": {"type": "string"}}), finish),
     ]
     brief = [{k: p.get(k) for k in ("id", "name", "kind", "function", "material", "shape", "size_mm", "center_mm", "layer")} for p in anatomy["parts"]]
@@ -111,7 +151,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
             f"Object: {anatomy['object']['name']} ({anatomy['object'].get('category', '')}), {anatomy['object']['dimensions_mm']} mm.\n"
             f"Parts:\n{json.dumps(brief)}\n\nModel them."}]},
     ]
-    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=4,
+    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
                    reasoning_effort="low", until="finish", max_tokens=24000)
     return len(solids)
 
