@@ -70,12 +70,24 @@ def pick_object(matches: Matches) -> dict[str, Any]:
     return max(matches, key=lambda m: (m["confidence"] or 0.5) * m["coverage"] * _area(m["box"]))
 
 
+def _object_phrases(obj: dict[str, Any]) -> list[str]:
+    """The model's phrase, then shorter generic tails of it and of the category ("VR controller" -> "controller")."""
+    words = obj["sam_prompt"].split()
+    category = obj.get("category", "").split()
+    tails = [" ".join(words[-2:]), words[-1] if words else "", category[-1] if category else ""]
+    return [p for p in dict.fromkeys([obj["sam_prompt"], *tails]) if p]
+
+
 async def object_frame(cache: SegmentCache, anatomy: dict[str, Any]) -> tuple[Frame, dict[str, Any]] | None:
-    matches = await cache.get(anatomy["object"]["sam_prompt"])
-    if isinstance(matches, Exception) or not matches:
-        return None
-    target = pick_object(matches)
-    return Frame(target["box"], anatomy["object"]["dimensions_mm"]), target
+    """Find the whole object, falling back to simpler phrases; the phrase that worked is written back."""
+    obj = anatomy["object"]
+    for phrase in _object_phrases(obj):
+        matches = await cache.get(phrase)
+        if not isinstance(matches, Exception) and matches:
+            obj["sam_prompt"] = phrase
+            target = pick_object(matches)
+            return Frame(target["box"], obj["dimensions_mm"]), target
+    return None
 
 
 def part_matches(frame: Frame, target: dict[str, Any], matches: Matches) -> Matches:

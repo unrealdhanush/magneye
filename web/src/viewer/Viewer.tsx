@@ -1,4 +1,4 @@
-import { Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
+import { Bounds, Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
@@ -32,7 +32,10 @@ export function Viewer(props: ViewerProps) {
       <directionalLight position={[3, 5, 4]} intensity={1.6} />
       <directionalLight position={[-4, -2, -3]} intensity={0.5} color="#88aaff" />
       <Suspense fallback={null}>
-        <Scene {...props} />
+        {/* Frame the assembled object once; explode/playback then move parts within that view. */}
+        <Bounds fit clip margin={1.9}>
+          <Scene {...props} />
+        </Bounds>
       </Suspense>
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={1.2} maxDistance={12} />
     </Canvas>

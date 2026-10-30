@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -68,26 +69,15 @@ async def run_loop(
         if not calls:
             return msg.get("content") or ""
 
+        # Tool calls in one turn are independent, so run them concurrently (SAM calls dominate latency).
+        for call in calls:
+            await emit({"type": "step", "agent": agent, "tool": call.get("function", {}).get("name", ""), "status": "running"})
+        results = await asyncio.gather(*(_run_call(call, by_name) for call in calls))
         attachments: list[dict[str, Any]] = []
         stop = False
-        for call in calls:
-            fn = call.get("function", {})
-            name = fn.get("name", "")
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = None
-            tool = by_name.get(name)
-            if tool is None or not isinstance(args, dict):
-                result = ToolResult(f"Error: unknown tool or invalid JSON arguments for {name!r}.", f"{name}: bad call", ok=False)
-            else:
-                await emit({"type": "step", "agent": agent, "tool": name, "status": "running"})
-                try:
-                    result = await tool.run(args)
-                except Exception as e:  # a failing tool is information for the model, not a crash
-                    result = ToolResult(f"Error: {e}", f"{name} failed: {e}", ok=False)
-            await emit({"type": "step", "agent": agent, "tool": name, "status": "done" if result.ok else "error",
-                        "text": result.summary})
+        for call, result in zip(calls, results):
+            await emit({"type": "step", "agent": agent, "tool": call.get("function", {}).get("name", ""),
+                        "status": "done" if result.ok else "error", "text": result.summary})
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result.content})
             attachments += result.attach
             stop = stop or result.stop
@@ -97,3 +87,19 @@ async def run_loop(
             return ""
     await emit({"type": "step", "agent": agent, "tool": "limit", "status": "error", "text": f"Stopped after {max_turns} turns"})
     return ""
+
+
+async def _run_call(call: dict[str, Any], by_name: dict[str, Tool]) -> ToolResult:
+    fn = call.get("function", {})
+    name = fn.get("name", "")
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        args = None
+    tool = by_name.get(name)
+    if tool is None or not isinstance(args, dict):
+        return ToolResult(f"Error: unknown tool or invalid JSON arguments for {name!r}.", f"{name}: bad call", ok=False)
+    try:
+        return await tool.run(args)
+    except Exception as e:  # a failing tool is information for the model, not a crash
+        return ToolResult(f"Error: {e}", f"{name} failed: {e}", ok=False)

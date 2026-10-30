@@ -14,7 +14,7 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },
   check_geometry: { label: 'Check the geometry', model: 'checks', orb: 'solving' },
   view_layout: { label: 'Review layout', model: 'Muse Wonder', orb: 'shaping' },
-  update_part: { label: 'Revise a part', model: 'Muse Wonder', orb: 'shaping' },
+  update_parts: { label: 'Revise parts', model: 'Muse Wonder', orb: 'shaping' },
   add_part: { label: 'Add a missed part', model: 'Muse Wonder', orb: 'shaping' },
   remove_part: { label: 'Remove a part', model: 'Muse Wonder', orb: 'shaping' },
   finish: { label: 'Verified', model: 'Muse Wonder', orb: 'working' },
@@ -57,7 +57,7 @@ export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: 
                   <span className="truncate text-footnote font-medium text-ink">{meta.label}</span>
                   <span className="ms-auto shrink-0 font-mono text-caption2 uppercase tracking-wider text-muted">{meta.model}</span>
                 </span>
-                {st.text && <span className={`block text-caption ${st.status === 'error' ? 'text-red-text' : 'text-muted'}`}>{st.text}</span>}
+                {st.text && <span title={st.text} className={`line-clamp-3 text-caption ${st.status === 'error' ? 'text-red-text' : 'text-muted'}`}>{st.text}</span>}
               </span>
             </li>
           )

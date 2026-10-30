@@ -93,7 +93,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
       case 'step':
         setThinking(null)
         setSteps(prev => {
-          const i = prev.findLastIndex(st => st.status === 'running' && st.agent === e.agent && st.tool === e.tool)
+          const i = prev.findIndex(st => st.status === 'running' && st.agent === e.agent && st.tool === e.tool)
           const next = { agent: e.agent, tool: e.tool, status: e.status, text: e.text }
           if (i >= 0 && e.status !== 'running') return prev.map((st, j) => (j === i ? next : st))
           return [...prev, next]
@@ -161,7 +161,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
 
   return (
     <div className="grid gap-2 pt-2 lg:grid-cols-[320px_minmax(0,1fr)_360px]">
-      <aside className="order-2 space-y-2 lg:order-1" aria-label="Input and pipeline">
+      <aside className="order-2 space-y-2 lg:order-1 lg:h-[calc(100vh-112px)] lg:overflow-y-auto lg:pe-1" aria-label="Input and agent trace">
         <PhotoMasks imageUrl={session.image_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
         <AgentTrace steps={steps} thinking={thinking} />
         {anatomy && anatomy.caveats.length > 0 && (
@@ -205,7 +205,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         )}
       </section>
 
-      <aside className="order-3 space-y-3" aria-label="Object, answers and scenarios">
+      <aside className="order-3 space-y-3 lg:h-[calc(100vh-112px)] lg:overflow-y-auto lg:pe-1" aria-label="Object, conversation and scenarios">
         {anatomy && <ObjectCard anatomy={anatomy} />}
         <Conversation turns={turns} busy={asking} onReply={ask} />
         <AskBar disabled={!anatomy || asking} onAsk={ask} onTranscribe={async wav => (await api.transcribe(wav)).text} />

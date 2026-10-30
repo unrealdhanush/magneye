@@ -102,8 +102,8 @@ Parts:
 - 12 to 28 parts. Include the outer housing pieces as kind "exterior", plus every functionally important internal component as kind "internal" (boards, sensors, actuators, batteries, springs, mechanisms, fasteners that matter for disassembly).
 - id is snake_case and unique. shape is one of {SHAPES}; pick the closest primitive and size it realistically. material is one of {MATERIALS}.
 - layer is depth from the outside: 0 is the outer shell, then increasing as you go inward. It drives the exploded view and the disassembly order.
-- sam_prompt: for parts visible in this photo, a short noun phrase (2 to 4 words) an open-vocabulary segmenter can find in the image, e.g. "thumbstick", "trigger button". null for parts hidden in this photo.
-- object.sam_prompt: a short noun phrase that finds the whole object in the photo.
+- sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "thumbstick", "button", "strap", "lens"; bad: "Oculus menu button", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.
+- object.sam_prompt: the generic everyday noun for the whole object, 1 or 2 words, never a brand (good: "game controller", "camera", "kettle"; bad: "Oculus Touch VR controller").
 - confidence (0 to 1) is how sure you are this part exists as described in this specific model. Use well-known teardown knowledge when you recognise the exact product; otherwise infer from the category and say so in caveats.
 
 Connections link parts that physically or electrically interact (kind is one of {LINKS}).

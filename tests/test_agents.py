@@ -82,7 +82,7 @@ def test_builder_verifies_and_edits(monkeypatch):
         {"content": "", "tool_calls": [_call("find_in_photo", {"phrase": "thumbstick"}), _call("find_in_photo", {"phrase": "red button"}, 1),
                                        _call("check_geometry", {}), _call("view_layout", {})]},
         {"content": "", "tool_calls": [_call("remove_part", {"id": "ghost_button", "reason": "SAM found no red button"}),
-                                       _call("update_part", {"id": "stick", "reason": "SAM position", "center_mm": [0, 20, 20]}, 1)]},
+                                       _call("update_parts", {"updates": [{"id": "stick", "reason": "SAM position", "center_mm": [0, 20, 20]}]}, 1)]},
         {"content": "", "tool_calls": [_call("finish", {"summary": "Verified against the photo"})]},
     ])
     monkeypatch.setattr(meta, "chat_json", fake_draft)

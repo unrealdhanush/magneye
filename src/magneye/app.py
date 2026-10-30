@@ -150,18 +150,16 @@ async def build_session(sid: str) -> StreamingResponse:
     async def work(emit: Emit) -> None:
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
+        # Same photo + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).
+        key = f"{s['image_sha'][:24]}-{hashlib.sha256(s['prompt'].encode()).hexdigest()[:12]}.json"
+        cached = DATA / "cache" / key
         if anatomy is None:
-            # Same photo + same prompt -> reuse the earlier verified anatomy (keeps demos fast and cheap).
-            key = f"{s['image_sha'][:24]}-{hashlib.sha256(s['prompt'].encode()).hexdigest()[:12]}.json"
-            cached = DATA / "cache" / key
             if cached.exists():
                 anatomy = _read_json(cached)
                 await emit({"type": "step", "agent": "builder", "tool": "cache", "status": "done",
                             "text": "Reused the verified anatomy for this photo and prompt"})
             else:
                 anatomy = await build(image=image, prompt=s["prompt"], emit=emit, model=MODEL, reasoning=REASONING, cache=cache)
-                cached.parent.mkdir(parents=True, exist_ok=True)
-                _write_json(cached, anatomy)
             _write_json(d / "anatomy.json", anatomy)
         g = _read_json(d / "ground.json")
         if g is None:
@@ -172,6 +170,10 @@ async def build_session(sid: str) -> StreamingResponse:
                 (d / "mask.png").write_bytes(mask)
             _write_json(d / "anatomy.json", anatomy)
             _write_json(d / "ground.json", g)
+            if g["object"] and not cached.exists():
+                # Only anatomy that SAM could ground is worth reusing.
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                _write_json(cached, anatomy)
             await emit({"type": "step", "agent": "builder", "tool": "ground", "status": "done" if g["object"] else "error",
                         "text": f"SAM 3.1 grounded {len(g['parts'])} visible parts" if g["object"]
                         else "Object not found in photo; showing the inferred layout"})
