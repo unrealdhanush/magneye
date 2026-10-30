@@ -55,3 +55,27 @@ def test_saving_edits_cleans_references(monkeypatch, tmp_path):
     assert saved["revision"] == 1 and json.loads((d / "ground.json").read_text())["parts"] == {"a": {}}
     assert client.put("/api/sessions/s1/anatomy", json={"parts": [{"id": "a"}]}).status_code == 400
     assert client.put("/api/sessions/s1/anatomy", json={"parts": [{**part, "id": "a"}, {**part, "id": "a"}]}).status_code == 400
+
+
+def test_runs_per_hour_limit_spares_cached_and_built_sessions(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setattr(A, "DATA", tmp_path)
+    monkeypatch.setattr(A, "RUNS_PER_HOUR", 1)
+    monkeypatch.setattr(A, "_runs", {})
+    client = TestClient(A.app)
+    d = tmp_path / "sessions" / "s1"
+    d.mkdir(parents=True)
+    (d / "anatomy.json").write_text(json.dumps({"object": {}, "parts": [], "connections": [], "scenarios": [], "failures": []}))
+    (d / "session.json").write_text(json.dumps({"prompt": "", "size": [1, 1], "image_sha": "ab" * 32}))
+    (d / "image.jpg").write_bytes(_jpeg((1, 2, 3)))
+    # Opening a session that is already built spends nothing; each visitor has their own hourly budget.
+    assert client.post("/api/sessions/s1/build").status_code == 200
+    req = type("R", (), {"headers": {}, "client": type("C", (), {"host": "1.2.3.4"})()})()
+    A._spend(req)
+    try:
+        A._spend(req)
+        raise AssertionError("second run in the hour should be refused")
+    except A.HTTPException as e:
+        assert e.status_code == 429
+    other = type("R", (), {"headers": {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}, "client": None})()
+    A._spend(other)  # a different visitor has their own budget

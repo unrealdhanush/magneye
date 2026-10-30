@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -37,6 +38,22 @@ MODEL = os.environ.get("MAGNEYE_MODEL", "muse-wonder-1.0")
 REASONING = os.environ.get("MAGNEYE_REASONING", "medium")
 MAX_SIDE = 1600
 MAX_EXTRAS = 5
+# A public deployment spends the operator's Meta API budget, so each visitor gets this many agent runs (full builds
+# and guide questions) per hour; cached builds are free. 0 turns the limit off.
+RUNS_PER_HOUR = int(os.environ.get("MAGNEYE_RUNS_PER_HOUR", "30"))
+_runs: dict[str, list[float]] = {}
+
+
+def _spend(request: Request) -> None:
+    if RUNS_PER_HOUR <= 0:
+        return
+    forwarded = request.headers.get("fly-client-ip") or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    who = forwarded or (request.client.host if request.client else "unknown")
+    now = time.time()
+    recent = [t for t in _runs.get(who, []) if now - t < 3600]
+    if len(recent) >= RUNS_PER_HOUR:
+        raise HTTPException(429, "That's the limit of builds and questions for this hour. Try again a little later.")
+    _runs[who] = [*recent, now]
 
 app = FastAPI(title="Magneye")
 
@@ -232,11 +249,16 @@ async def _clear_photos(d: Path, s: dict[str, Any], emit: Emit) -> None:
 
 
 @app.post("/api/sessions/{sid}/build")
-async def build_session(sid: str) -> StreamingResponse:
+async def build_session(sid: str, request: Request) -> StreamingResponse:
     """Builder agent: Muse Wonder drafts the anatomy, then verifies it with SAM 3.1, geometry checks and a
     look at its own layout; finally SAM 3.1 grounds the visible parts for the viewer."""
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
+    extra = "".join(s.get("extra_shas") or [s.get("side_sha", "")])
+    key = f"{s['image_sha'][:24]}-{hashlib.sha256((s['prompt'] + extra).encode()).hexdigest()[:12]}.json"
+    cached = DATA / "cache" / key
+    if not (d / "anatomy.json").exists() and not cached.exists():
+        _spend(request)
 
     async def work(emit: Emit) -> None:
         await _clear_photos(d, s, emit)
@@ -245,9 +267,6 @@ async def build_session(sid: str) -> StreamingResponse:
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
         # Same photos + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).
-        extra = "".join(s.get("extra_shas") or [s.get("side_sha", "")])
-        key = f"{s['image_sha'][:24]}-{hashlib.sha256((s['prompt'] + extra).encode()).hexdigest()[:12]}.json"
-        cached = DATA / "cache" / key
         if anatomy is None:
             if cached.exists():
                 anatomy = _read_json(cached)
@@ -337,12 +356,13 @@ def save_anatomy(sid: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/api/sessions/{sid}/ask")
-async def ask(sid: str, body: Ask) -> StreamingResponse:
+async def ask(sid: str, body: Ask, request: Request) -> StreamingResponse:
     """Guide agent: answers by driving the viewer, looking closer at the photo, or asking a question first."""
     d = _session_dir(sid)
     anatomy = _read_json(d / "anatomy.json")
     if anatomy is None:
         raise HTTPException(409, "build the anatomy first")
+    _spend(request)
     image = (d / "image.jpg").read_bytes()
     messages = _read_json(d / "guide.json") or guide.opening_messages(anatomy, image)
 

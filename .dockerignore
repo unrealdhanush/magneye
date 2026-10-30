@@ -1,0 +1,12 @@
+.git
+.venv
+.data
+.env
+.history
+.pytest_cache
+**/__pycache__
+web/node_modules
+web/dist
+bench
+gpu
+tests
