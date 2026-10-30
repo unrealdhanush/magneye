@@ -14,6 +14,7 @@ import html
 import io
 import ipaddress
 import re
+from collections.abc import Sequence
 from itertools import zip_longest
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -32,11 +33,12 @@ MAX_CANDIDATES = 12
 MAX_COMMONS = 6
 PER_PAGE = 4
 MAX_VIEWS = 3
+MAX_TOTAL = 6
 VIEWS = ["front", "back", "left", "right", "top", "bottom", "three_quarter", "detail", "other"]
 # Views that add something the front photo cannot show, best first.
 USEFUL = ["left", "right", "back", "top", "bottom", "three_quarter"]
 
-VET_SYSTEM = """You vet reference photos for Magneye, which builds 3D models of objects. Image 0 is the user's photo; it defines the front view. Images 1 to N are candidate photos found online.
+VET_SYSTEM = """You vet reference photos for Magneye, which builds 3D models of objects. Image 0 is the user's photo; it defines the front view. Images 1 to N are candidate photos: some the user took, some found online.
 
 For each candidate:
 - same_shape: true if it shows an object with the same body shape as image 0: the same model, or a variant that differs only in colour, material, dial or finish. A different generation, size or redesigned body is false.
@@ -171,28 +173,39 @@ async def candidates(query: str | None, sources: list[dict[str, str]]) -> list[d
 
 
 def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Up to MAX_VIEWS distinct useful views with the same body shape; the user's own photo comes first, then clean
-    shots, and Commons photos win ties."""
-    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+    """The user's own photos first, each one, in the order they were added; then up to MAX_VIEWS distinct useful views
+    found online with the same body shape, for sides the user did not cover (clean shots and Commons photos win
+    ties). At most MAX_TOTAL in all."""
+    own: dict[int, dict[str, Any]] = {}
+    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
     for v in verdicts:
-        i = v.get("index", 0) - 1
-        if not (0 <= i < len(cands)) or not v.get("same_shape") or v.get("view") not in USEFUL:
+        i, view = v.get("index", 0) - 1, v.get("view")
+        if not (0 <= i < len(cands)):
             continue
-        rank = (int(cands[i]["origin"] == "user"), int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
-        if v["view"] not in best or rank > best[v["view"]][0]:
-            best[v["view"]] = (rank, {**cands[i], "view": v["view"], "note": v.get("note", ""),
-                                      "clean": bool(v.get("clean")), "upright": bool(v.get("upright"))})
-    ordered = sorted(best.values(), key=lambda rv: (-rv[0][0], -rv[0][1], USEFUL.index(rv[1]["view"])))
-    return [c for _, c in ordered[:MAX_VIEWS]]
+        entry = {**cands[i], "view": view, "note": v.get("note", ""), "clean": bool(v.get("clean")), "upright": bool(v.get("upright"))}
+        if cands[i]["origin"] == "user":
+            # Taken on purpose, so kept unless it shows something else; a close-up of one feature counts.
+            if view != "other" and (v.get("same_shape") or view == "detail"):
+                own[i] = entry
+            continue
+        if not v.get("same_shape") or view not in USEFUL:
+            continue
+        rank = (int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
+        if view not in best or rank > best[view][0]:
+            best[view] = (rank, entry)
+    covered = {c["view"] for c in own.values()}
+    found = [c for _, c in sorted(best.values(), key=lambda rv: (-rv[0][0], USEFUL.index(rv[1]["view"]))) if c["view"] not in covered]
+    return ([own[i] for i in sorted(own)] + found[:MAX_VIEWS])[:MAX_TOTAL]
 
 
 async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str,
-               side: bytes | None = None) -> dict[str, Any]:
-    """Vetted reference views: {"views": [...with jpeg...], "considered": n}. A second photo the user took
-    (`side`) is vetted first and wins over any photo found online."""
+               own: Sequence[bytes] = ()) -> dict[str, Any]:
+    """Vetted reference views: {"views": [...with jpeg...], "considered": n}. More photos the user took (`own`)
+    are vetted first and come before any photo found online."""
     found = await candidates(query, sources) if query or sources else []
-    own = _normalize(side) if side else None
-    cands = ([{"origin": "user", "title": "Your second photo", "page_url": None, "image_url": None, "jpeg": own}] if own else []) + found
+    mine = [{"origin": "user", "own": n, "title": f"Your photo {n + 2}", "page_url": None, "image_url": None, "jpeg": jpeg}
+            for n, jpeg in enumerate(_normalize(raw) for raw in own) if jpeg]
+    cands = mine + found
     if not cands:
         return {"views": [], "considered": 0}
     verdict = await meta.chat_json(
@@ -250,5 +263,6 @@ async def side_profile(view: dict[str, Any], phrase: str) -> dict[str, Any] | No
 def cite(view: dict[str, Any]) -> dict[str, Any]:
     """What the anatomy keeps for the UI: Commons photos can be shown with their licence; web photos are only linked;
     the user's own photo is served from their session."""
-    keep = ["origin", "view", "title", "page_url", "note"] + (["image_url", "license", "author"] if view["origin"] == "commons" else [])
+    extra = {"commons": ["image_url", "license", "author"], "user": ["own"]}.get(view["origin"], [])
+    keep = ["origin", "view", "title", "page_url", "note", *extra]
     return {k: view.get(k) for k in keep}

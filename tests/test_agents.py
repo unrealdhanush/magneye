@@ -249,17 +249,32 @@ def test_side_profile_maps_outline_rows_to_depth(monkeypatch):
     assert mirrored["rows"][0] == [-0.5, 0.0]
 
 
-def test_users_second_photo_is_vetted_first_and_wins(monkeypatch):
+def test_users_own_photos_are_kept_in_order_before_found_ones(monkeypatch):
     seen = {}
 
     async def fake_vet(*, more_images, **_):
         seen["n"] = len(more_images)
-        return {"candidates": [{"index": 1, "same_shape": True, "view": "left", "clean": True, "upright": True, "note": "grip side"}]}
+        return {"candidates": [
+            {"index": 1, "same_shape": True, "view": "left", "clean": True, "upright": True, "note": "grip side"},
+            {"index": 2, "same_shape": False, "view": "detail", "clean": False, "upright": True, "note": "battery door"},
+            {"index": 3, "same_shape": False, "view": "other", "clean": False, "upright": True, "note": "a cat"},
+        ]}
 
     monkeypatch.setattr(meta, "chat_json", fake_vet)
-    # No product name and no cited pages (research failed): the user's own photo is still vetted, with no web lookups.
-    found = asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", side=_photo()))
-    assert seen["n"] == 1 and found["considered"] == 1
-    view = found["views"][0]
-    assert view["origin"] == "user" and views.profile_view(found["views"]) is view
-    assert views.cite(view) == {"origin": "user", "view": "left", "title": "Your second photo", "page_url": None, "note": "grip side"}
+    # No product name and no cited pages (research failed): the user's own photos are still vetted, with no web lookups.
+    found = asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", own=[_photo(), _photo(), _photo()]))
+    assert seen["n"] == 3 and found["considered"] == 3
+    # Each photo counts (a close-up too); one that shows something else is dropped.
+    assert [(v["own"], v["view"]) for v in found["views"]] == [(0, "left"), (1, "detail")]
+    assert views.profile_view(found["views"]) is found["views"][0]
+    assert views.cite(found["views"][0]) == {"origin": "user", "view": "left", "title": "Your photo 2", "page_url": None,
+                                             "note": "grip side", "own": 0}
+
+
+def test_found_views_skip_sides_the_user_already_covered():
+    cands = [{"origin": "user", "own": 0, "page_url": None}, {"origin": "commons", "page_url": "https://a"},
+             {"origin": "web", "page_url": "https://b"}]
+    verdicts = [{"index": 1, "same_shape": True, "view": "left", "clean": True, "note": ""},
+                {"index": 2, "same_shape": True, "view": "left", "clean": True, "note": ""},
+                {"index": 3, "same_shape": True, "view": "back", "clean": True, "note": ""}]
+    assert [(v["origin"], v["view"]) for v in views.pick(cands, verdicts)] == [("user", "left"), ("web", "back")]

@@ -1,6 +1,6 @@
 # Magneye
 
-See inside anything you can photograph. Give Magneye one photo (plus, optionally, a second one from the side) and a short prompt. Meta's models work out what the object is, what's inside it and how it works. The result is an interactive 3D exploded view: you can play how the object works, or describe a fault and watch the likely culprit light up red.
+See inside anything you can photograph. Give Magneye a photo (plus, optionally, up to five more from other sides or close up) and a short prompt. Meta's models work out what the object is, what's inside it and how it works. The result is an interactive 3D exploded view: you can play how the object works, or describe a fault and watch the likely culprit light up red.
 
 Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026).
 
@@ -11,7 +11,7 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 **Builder agent:** turns the photo into a verified anatomy.
 
 1. Researches the object with Muse Wonder's web search: identifies the exact product, then looks for teardowns, specs and common failures (at most 6 searches) and writes a cited blueprint brief. Only URLs the search actually returned are kept as sources.
-2. Finds other angles of the same product: photos on Wikimedia Commons (shown with licence and author) and on the pages the research cited (used as model input and linked, not shown). A second photo the user took comes first. Muse Wonder vets each one (same body shape? which side?) and keeps up to three.
+2. Finds other angles of the same product: photos on Wikimedia Commons (shown with licence and author) and on the pages the research cited (used as model input and linked, not shown). The user's own extra photos come first, each one kept. Muse Wonder vets each one (same body shape? which side?) and keeps up to three.
 3. Drafts the anatomy as JSON from the photo, the brief and those views: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes. Each part is marked seen, documented (by a cited source) or inferred. Straps, bracelets and cables are accessories: the viewer frames the main body and moves them aside.
 4. Verifies the draft with its tools:
    - `find_in_photo` runs **SAM 3.1** on a noun phrase. It confirms each part the draft calls visible, reports where the part really is in the object's millimetre frame, and catches parts the draft imagined.

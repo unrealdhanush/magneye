@@ -26,10 +26,10 @@ export default function App() {
     return () => removeEventListener('hashchange', onHash)
   }, [])
 
-  const start = async (photo: Blob, prompt: string, side: Blob | null) => {
+  const start = async (photo: Blob, prompt: string, extras: Blob[]) => {
     setUploading(true); setStartError(null)
     try {
-      const s = await api.createSession(photo, prompt, side)
+      const s = await api.createSession(photo, prompt, extras)
       location.hash = `#/s/${s.id}`
     } catch (e) { setStartError(message(e)) }
     setUploading(false)

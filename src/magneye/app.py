@@ -33,6 +33,7 @@ WEB_DIST = ROOT / "web" / "dist"
 MODEL = os.environ.get("MAGNEYE_MODEL", "muse-wonder-1.0")
 REASONING = os.environ.get("MAGNEYE_REASONING", "medium")
 MAX_SIDE = 1600
+MAX_EXTRAS = 5
 
 app = FastAPI(title="Magneye")
 
@@ -84,18 +85,21 @@ def health() -> dict[str, Any]:
 
 @app.post("/api/sessions")
 async def create_session(image: UploadFile = File(...), prompt: str = Form(""),
-                         side: UploadFile | None = File(None)) -> dict[str, Any]:
-    """A new session from the user's photo (the front view), an optional second photo from another side, and a prompt."""
+                         extras: list[UploadFile] = File(default=[])) -> dict[str, Any]:
+    """A new session from the user's main photo (the front view), up to MAX_EXTRAS more photos of the object from
+    other angles or close up, and a prompt."""
+    if len(extras) > MAX_EXTRAS:
+        raise HTTPException(400, f"at most {MAX_EXTRAS} extra photos")
     jpeg, size = _normalize_image(await image.read())
-    side_jpeg = _normalize_image(await side.read())[0] if side else None
+    more = [_normalize_image(await f.read())[0] for f in extras]
     sid = uuid.uuid4().hex[:16]
     d = DATA / "sessions" / sid
     d.mkdir(parents=True)
     (d / "image.jpg").write_bytes(jpeg)
-    session = {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest()}
-    if side_jpeg:
-        (d / "side.jpg").write_bytes(side_jpeg)
-        session["side_sha"] = hashlib.sha256(side_jpeg).hexdigest()
+    for n, extra in enumerate(more, 1):
+        (d / f"extra-{n}.jpg").write_bytes(extra)
+    session = {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest(),
+               "extra_shas": [hashlib.sha256(extra).hexdigest() for extra in more]}
     _write_json(d / "session.json", session)
     return {"id": sid, "image_url": f"/api/sessions/{sid}/image.jpg", "size": size, "prompt": prompt}
 
@@ -105,12 +109,18 @@ def session_image(sid: str) -> FileResponse:
     return FileResponse(_session_dir(sid) / "image.jpg", media_type="image/jpeg")
 
 
-@app.get("/api/sessions/{sid}/side.jpg")
-def session_side_image(sid: str) -> FileResponse:
-    path = _session_dir(sid) / "side.jpg"
-    if not path.exists():
-        raise HTTPException(404, "no second photo")
-    return FileResponse(path, media_type="image/jpeg")
+def _extra_photos(d: Path) -> list[Path]:
+    # Sessions from before multiple photos kept a single "side.jpg".
+    found = sorted(d.glob("extra-*.jpg"), key=lambda p: int(p.stem.split("-")[1]))
+    return found or [p for p in [d / "side.jpg"] if p.exists()]
+
+
+@app.get("/api/sessions/{sid}/extra/{n}.jpg")
+def session_extra_image(sid: str, n: int) -> FileResponse:
+    photos = _extra_photos(_session_dir(sid))
+    if not 1 <= n <= len(photos):
+        raise HTTPException(404, "no such photo")
+    return FileResponse(photos[n - 1], media_type="image/jpeg")
 
 
 @app.get("/api/sessions/{sid}")
@@ -161,13 +171,14 @@ async def build_session(sid: str) -> StreamingResponse:
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
     image = (d / "image.jpg").read_bytes()
-    side = (d / "side.jpg").read_bytes() if (d / "side.jpg").exists() else None
+    own = [p.read_bytes() for p in _extra_photos(d)]
 
     async def work(emit: Emit) -> None:
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
         # Same photos + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).
-        key = f"{s['image_sha'][:24]}-{hashlib.sha256((s['prompt'] + s.get('side_sha', '')).encode()).hexdigest()[:12]}.json"
+        extra = "".join(s.get("extra_shas") or [s.get("side_sha", "")])
+        key = f"{s['image_sha'][:24]}-{hashlib.sha256((s['prompt'] + extra).encode()).hexdigest()[:12]}.json"
         cached = DATA / "cache" / key
         if anatomy is None:
             if cached.exists():
@@ -176,11 +187,11 @@ async def build_session(sid: str) -> StreamingResponse:
                             "text": "Reused the verified anatomy for this photo and prompt"})
             else:
                 anatomy = await build(image=image, prompt=s["prompt"], emit=emit, model=MODEL, reasoning=REASONING,
-                                      cache=cache, side=side)
-            # The user's own second photo is served from this session (a cached anatomy may come from another).
+                                      cache=cache, own=own)
+            # The user's own photos are served from this session (a cached anatomy may come from another).
             for ref in anatomy.get("references", []):
                 if ref["origin"] == "user":
-                    ref["image_url"] = f"/api/sessions/{sid}/side.jpg"
+                    ref["image_url"] = f"/api/sessions/{sid}/extra/{ref.get('own', 0) + 1}.jpg"
             _write_json(d / "anatomy.json", anatomy)
         g = _read_json(d / "ground.json")
         if g is None:
