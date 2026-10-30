@@ -44,6 +44,8 @@ export default {
       minHeight: { tap: px(48) },
       minWidth: { table: px(640) },
       maxWidth: { page: px(1600) },
+      // Very wide displays get a fourth column (object details beside the conversation).
+      screens: { '3xl': px(2200) },
       transitionTimingFunction: { out: 'cubic-bezier(0.23, 1, 0.32, 1)', 'in-out': 'cubic-bezier(0.77, 0, 0.175, 1)' },
       scale: { press: '0.96' },
     },

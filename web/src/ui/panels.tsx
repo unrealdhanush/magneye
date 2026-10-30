@@ -3,10 +3,10 @@ import { ThinkingOrb, type OrbState } from 'thinking-orbs'
 import { startRecording, type Recorder } from '../audio'
 import type { Agent, Anatomy, Failure, Ground, Part, Scenario } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
-import { IconArrow, IconCheck, IconMic, IconPlay, IconStop, IconWarn } from './icons'
+import { IconArrow, IconCheck, IconChevron, IconMic, IconPlay, IconStop, IconWarn } from './icons'
 
-/** One row of the agent trace: a tool call with its live status. */
-export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'done' | 'error'; text?: string }
+/** One row of the agent trace: a tool call with its live status, or a note the agent wrote between turns. */
+export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'done' | 'error' | 'note'; text?: string }
 
 const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }> = {
   research: { label: 'Research teardowns', model: 'Wonder · web', orb: 'searching' },
@@ -32,35 +32,69 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   ask_user: { label: 'Ask you', model: 'Muse Wonder', orb: 'composing' },
   limit: { label: 'Turn limit', model: 'agent', orb: 'working' },
   verify: { label: 'Verify', model: 'Muse Wonder', orb: 'solving' },
+  side_profile: { label: 'Trace the side profile', model: 'SAM 3.1', orb: 'shaping' },
+  move_parts: { label: 'Move the body', model: 'Muse Wonder', orb: 'shaping' },
+  thought: { label: 'Thinking', model: 'Muse Wonder', orb: 'solving' },
+  error: { label: 'Error', model: '', orb: 'working' },
 }
 
 const AGENT_TONE: Record<Agent, string> = { builder: 'bg-indigo/10 text-indigo-text', guide: 'bg-teal/10 text-teal-text' }
 
 export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: Agent | null }) {
-  const list = useRef<HTMLOListElement>(null)
-  // Keep the newest step in view as agents work.
-  useEffect(() => { list.current?.scrollTo({ top: list.current.scrollHeight }) }, [steps.length, thinking])
+  const last = useRef<HTMLLIElement>(null)
+  const [open, setOpen] = useState<Set<number>>(new Set())
+  const [all, setAll] = useState(false)
+  // Follow the newest step while an agent is working; a replayed trace stays scrolled to the top.
+  const live = !!thinking || steps[steps.length - 1]?.status === 'running'
+  useEffect(() => { if (live) last.current?.scrollIntoView({ block: 'nearest' }) }, [steps.length, live])
+  const toggle = (i: number) => setOpen(prev => { const next = new Set(prev); if (next.has(i)) next.delete(i); else next.add(i); return next })
   return (
-    <section aria-labelledby="trace-title" className="space-y-1">
-      <h2 id="trace-title" className="text-headline text-ink">Agent trace</h2>
-      <ol ref={list} className="max-h-[384px] space-y-px overflow-y-auto rounded-md bg-card p-1 shadow-ring" aria-live="polite">
+    <details open className="group/trace">
+      <summary className="flex min-h-tap cursor-pointer list-none items-center gap-1 rounded-sm text-ink [&::-webkit-details-marker]:hidden">
+        <IconChevron className="h-2 w-2 shrink-0 transition-transform duration-150 ease-out group-open/trace:rotate-90" />
+        <h2 className="text-headline">Agent trace</h2>
+        <span className="tabular font-mono text-caption text-muted">{steps.length}</span>
+        <button type="button" onClick={e => { e.preventDefault(); setAll(a => !a); setOpen(new Set()) }}
+          className="press ms-auto rounded-sm px-1 py-0.5 text-footnote text-accent-text hover:bg-accent/10 group-[:not([open])]/trace:hidden">
+          {all ? 'Collapse all' : 'Expand all'}
+        </button>
+      </summary>
+      <ol className="mt-1 space-y-px rounded-md bg-card p-1 shadow-ring" aria-live="polite">
         {steps.map((st, i) => {
           const meta = TOOL_LABEL[st.tool] ?? { label: st.tool, model: '', orb: 'working' as OrbState }
-          return (
-            <li key={i} className="flex items-start gap-1 rounded-sm px-1 py-1 hover:bg-ink/5">
+          const expanded = all || open.has(i)
+          const tone = st.status === 'error' ? 'text-red-text' : st.status === 'note' ? 'text-ink' : 'text-muted'
+          const head = (
+            <>
               <span className="grid h-2.5 w-2.5 shrink-0 place-items-center pt-px">
                 {st.status === 'running' ? <ThinkingOrb state={meta.orb} size={20} aria-hidden="true" />
                   : st.status === 'done' ? <IconCheck className="h-2 w-2 text-green-text" />
+                  : st.status === 'note' ? <span className="h-1 w-1 rounded-full bg-ink/30" aria-hidden="true" />
                   : <IconWarn className="h-2 w-2 text-red-text" />}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="flex items-baseline gap-1">
+                {/* The model tag drops to its own line when the panel is too narrow, rather than squeezing the label. */}
+                <span className="flex flex-wrap items-baseline gap-x-1">
                   <span className={`shrink-0 rounded-full px-1 font-mono text-caption2 leading-4 ${AGENT_TONE[st.agent]}`}>{st.agent}</span>
-                  <span className="truncate text-footnote font-medium text-ink">{meta.label}</span>
+                  <span className="text-footnote font-medium text-ink">{meta.label}</span>
                   <span className="ms-auto shrink-0 font-mono text-caption2 uppercase tracking-wider text-muted">{meta.model}</span>
                 </span>
-                {st.text && <span title={st.text} className={`line-clamp-3 text-caption ${st.status === 'error' ? 'text-red-text' : 'text-muted'}`}>{st.text}</span>}
+                {st.text && (
+                  <span className={`block text-caption ${tone} ${expanded ? 'whitespace-pre-wrap break-words' : 'truncate'} ${st.status === 'note' ? 'italic' : ''}`}>
+                    {st.text}
+                  </span>
+                )}
               </span>
+            </>
+          )
+          return (
+            <li key={i} ref={i === steps.length - 1 ? last : undefined}>
+              {st.text ? (
+                <button type="button" onClick={() => toggle(i)} aria-expanded={expanded}
+                  className="flex w-full items-start gap-1 rounded-sm px-1 py-1 text-start hover:bg-ink/5">{head}</button>
+              ) : (
+                <div className="flex items-start gap-1 px-1 py-1">{head}</div>
+              )}
             </li>
           )
         })}
@@ -72,7 +106,7 @@ export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: 
         )}
         {!steps.length && !thinking && <li className="px-1 py-1 text-footnote text-muted">Waiting to start</li>}
       </ol>
-    </section>
+    </details>
   )
 }
 

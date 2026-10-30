@@ -42,3 +42,6 @@ export const IconXray = (p: SVGProps<SVGSVGElement>) => (
 export const IconReset = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4" /></svg>
 )
+export const IconChevron = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>
+)

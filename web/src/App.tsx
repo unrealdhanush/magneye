@@ -39,14 +39,15 @@ export default function App() {
     <>
       <a href="#main" className="sr-only focus:not-sr-only">Skip to content</a>
       <header className="glass sticky top-0 z-10 border-x-0 border-t-0">
-        <div className="mx-auto flex max-w-page items-center justify-between gap-2 px-2 py-1 sm:px-3">
+        <div className={`mx-auto flex items-center justify-between gap-2 px-2 py-1 sm:px-3 ${sid ? '' : 'max-w-page'}`}>
           <h1 className="font-display text-headline tracking-wide">
             <a href="#/" className="text-ink no-underline hover:underline">MAGNEYE</a>
           </h1>
           <ThemeToggle />
         </div>
       </header>
-      <main id="main" className="mx-auto max-w-page px-2 pb-6 sm:px-3">
+      {/* The workspace uses the whole window; the start screen stays a readable width. */}
+      <main id="main" className={`mx-auto px-2 pb-6 sm:px-3 ${sid ? '' : 'max-w-page'}`}>
         {health && !health.has_key && (
           <p role="alert" className="mt-2 rounded-md bg-card p-1.5 text-callout text-orange-text shadow-ring">
             ⚠ The server has no MODEL_API_KEY yet. Add your Meta Model API key to <code className="font-mono">.env</code> and restart it.
@@ -101,7 +102,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         })
         if (e.status !== 'running' && live) setThinking(e.tool === 'ground' || e.tool === 'finish' ? null : e.agent)
         break
-      case 'thought': break
+      case 'thought': setSteps(prev => [...prev, { agent: e.agent, tool: 'thought', status: 'note', text: e.text }]); break
       case 'user': setTurns(t => [...t, { role: 'user', text: e.text }]); break
       case 'question': setThinking(null); setTurns(t => [...t, { role: 'question', text: e.text, options: e.options }]); break
       case 'answer': setThinking(null); setTurns(t => [...t, { role: 'answer', text: e.text }]); break
@@ -161,8 +162,10 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const activeFailure = playback.kind === 'failure' ? playback.failure.id : null
 
   return (
-    <div className="grid gap-2 pt-2 lg:grid-cols-[320px_minmax(0,1fr)_360px]">
-      <aside className="order-2 space-y-2 lg:order-1 lg:h-[calc(100vh-112px)] lg:overflow-y-auto lg:pe-1" aria-label="Input and agent trace">
+    // Phones stack everything; tablets put the stage on top with the two panels side by side below; from xl the
+    // panels flank the stage and grow with the window, and 3xl splits the right panel into two columns.
+    <div className="grid gap-2 pt-2 md:grid-cols-2 xl:grid-cols-[clamp(300px,20vw,440px)_minmax(0,1fr)_clamp(340px,24vw,520px)] 3xl:grid-cols-[clamp(360px,17vw,480px)_minmax(0,1fr)_clamp(720px,32vw,960px)]">
+      <aside className="order-2 min-w-0 space-y-2 xl:order-1 xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1" aria-label="Input and agent trace">
         <PhotoMasks imageUrl={session.image_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
         <AgentTrace steps={steps} thinking={thinking} />
         {anatomy && anatomy.caveats.length > 0 && (
@@ -173,7 +176,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         )}
       </aside>
 
-      <section className="stage relative order-1 h-[60vh] min-h-[416px] overflow-hidden rounded-xl shadow-ring lg:order-2 lg:h-[calc(100vh-112px)]" aria-label="3D exploded view">
+      <section className="stage relative order-1 h-[60vh] min-w-0 min-h-[416px] overflow-hidden rounded-xl shadow-ring md:col-span-2 xl:order-2 xl:col-span-1 xl:h-[calc(100vh-112px)]" aria-label="3D exploded view">
         <div className="stage-grid absolute inset-0" aria-hidden="true" />
         <span className="hud-corner left-2 top-2 border-l-2 border-t-2" aria-hidden="true" />
         <span className="hud-corner right-2 top-2 border-r-2 border-t-2" aria-hidden="true" />
@@ -206,13 +209,20 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         )}
       </section>
 
-      <aside className="order-3 space-y-3 lg:h-[calc(100vh-112px)] lg:overflow-y-auto lg:pe-1" aria-label="Object, conversation and scenarios">
-        {anatomy && <ObjectCard anatomy={anatomy} />}
-        <Conversation turns={turns} busy={asking} onReply={ask} />
-        <AskBar disabled={!anatomy || asking} onAsk={ask} onTranscribe={async wav => (await api.transcribe(wav)).text} />
-        {selected && <PartDetail part={selected} onClose={() => setSelectedId(null)} />}
-        {anatomy && <ScenarioList scenarios={anatomy.scenarios} activeId={activeScenario} onPlay={play} />}
-        {anatomy && <FailureList failures={anatomy.failures} parts={anatomy.parts} activeId={activeFailure} onShow={show} />}
+      {/* Below 3xl the two groups dissolve (display: contents) and their items interleave by order: object, chat,
+          then the rest. On 3xl they become side-by-side columns: details on the left, the conversation on the right. */}
+      <aside className="order-3 flex min-w-0 flex-col gap-3 xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1 3xl:grid 3xl:grid-cols-2 3xl:items-start"
+        aria-label="Object, conversation and scenarios">
+        <div className="contents 3xl:block 3xl:space-y-3">
+          {anatomy && <div className="order-1"><ObjectCard anatomy={anatomy} /></div>}
+          {selected && <div className="order-4"><PartDetail part={selected} onClose={() => setSelectedId(null)} /></div>}
+          {anatomy && <div className="order-5"><ScenarioList scenarios={anatomy.scenarios} activeId={activeScenario} onPlay={play} /></div>}
+          {anatomy && <div className="order-6"><FailureList failures={anatomy.failures} parts={anatomy.parts} activeId={activeFailure} onShow={show} /></div>}
+        </div>
+        <div className="contents 3xl:sticky 3xl:top-0 3xl:block 3xl:space-y-3">
+          <div className="order-2"><Conversation turns={turns} busy={asking} onReply={ask} /></div>
+          <div className="order-3"><AskBar disabled={!anatomy || asking} onAsk={ask} onTranscribe={async wav => (await api.transcribe(wav)).text} /></div>
+        </div>
       </aside>
     </div>
   )
