@@ -1,5 +1,5 @@
 import { Bounds, Html, Line, OrbitControls, useGLTF, useTexture } from '@react-three/drei'
-import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { Anatomy, Ground, Part, Playback, Scenario } from '../types'
@@ -57,8 +57,60 @@ function Scene(p: ViewerProps) {
         ? <MeshShell url={p.meshUrl} anatomy={p.anatomy} explode={p.explode} xray={p.xray} playback={p.playback} />
         : <PhotoShell anatomy={p.anatomy} ground={p.ground} imageUrl={p.imageUrl} explode={p.explode} xray={p.xray} playback={p.playback} />)}
       {p.playback.kind === 'scenario' && <ScenarioPath scenario={p.playback.scenario} startedAt={p.playback.startedAt} registry={registry} />}
+      <CameraDirector playback={p.playback} registry={registry} anatomy={p.anatomy} s={s} />
     </group>
   )
+}
+
+type OrbitLike = { target: THREE.Vector3; update: () => void }
+interface Flight { fromPos: THREE.Vector3; fromTarget: THREE.Vector3; toPos: THREE.Vector3; toTarget: THREE.Vector3; start: number }
+const FLIGHT_MS = 1100
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+
+/** Flies the camera to a failure's culprit once the parts in the way have lifted off, and back home afterwards.
+ *  It only drives during the flight, so the user can orbit freely before and after. */
+function CameraDirector({ playback, registry, anatomy, s }: { playback: Playback; registry: Registry; anatomy: Anatomy; s: number }) {
+  const camera = useThree(st => st.camera)
+  const controls = useThree(st => st.controls) as unknown as OrbitLike | null
+  const home = useRef<{ pos: THREE.Vector3; target: THREE.Vector3 } | null>(null)
+  const flight = useRef<Flight | null>(null)
+
+  useEffect(() => {
+    if (!controls) return
+    const fly = (toPos: THREE.Vector3, toTarget: THREE.Vector3) => {
+      flight.current = { fromPos: camera.position.clone(), fromTarget: controls.target.clone(), toPos, toTarget, start: performance.now() }
+    }
+    if (playback.kind === 'failure') {
+      if (!home.current) home.current = { pos: camera.position.clone(), target: controls.target.clone() }
+      const culprit = anatomy.parts.find(p => p.id === playback.failure.culprit_part_id)
+      const wait = playback.failure.access_path.length * REMOVE_MS + 150
+      const timer = setTimeout(() => {
+        const obj = registry.get(playback.failure.culprit_part_id)
+        if (!obj || !culprit) return
+        const target = obj.getWorldPosition(new THREE.Vector3())
+        // Keep the current viewing angle; come in close enough that the culprit fills a good part of the view.
+        const dir = camera.position.clone().sub(controls.target).normalize()
+        const size = Math.max(...culprit.size_mm) * s
+        fly(target.clone().addScaledVector(dir, Math.min(Math.max(size * 12, 1.4), 2.6)), target)
+      }, wait)
+      return () => clearTimeout(timer)
+    }
+    if (home.current) {
+      fly(home.current.pos, home.current.target)
+      home.current = null
+    }
+  }, [playback, controls, camera, registry, anatomy, s])
+
+  useFrame(() => {
+    const f = flight.current
+    if (!f || !controls) return
+    const t = clamp01((performance.now() - f.start) / FLIGHT_MS), e = easeInOut(t)
+    camera.position.lerpVectors(f.fromPos, f.toPos, e)
+    controls.target.lerpVectors(f.fromTarget, f.toTarget, e)
+    controls.update()
+    if (t >= 1) flight.current = null
+  })
+  return null
 }
 
 /** Which step of a scenario is playing at time `t`, and how far through it (0..1). */
@@ -196,7 +248,7 @@ function labelFor(part: Part, playback: Playback, selectedId: string | null, hov
 
 /** Shell opacity: solid when assembled, fading as the object opens, faint while a scenario or failure plays. */
 function shellOpacity(explode: number, xray: boolean, playback: Playback) {
-  if (playback.kind !== 'idle') return 0.08
+  if (playback.kind !== 'idle') return 0
   if (xray) return 0.14
   return Math.max(0.06, 1 - explode * 2.2)
 }
@@ -207,6 +259,8 @@ function useShellFade(materials: THREE.Material[], target: number) {
       m.opacity += (target - m.opacity) * Math.min(1, dt * 8)
       m.transparent = m.opacity < 0.99
       m.depthWrite = m.opacity > 0.9
+      // Skip drawing a faded-out shell entirely: its overlapping walls otherwise streak across the internals.
+      m.visible = m.opacity > 0.02
     }
   })
 }
