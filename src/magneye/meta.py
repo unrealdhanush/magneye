@@ -20,6 +20,9 @@ from meta_sam_parser import (
 BASE_URL = "https://api.meta.ai/v1"
 TIMEOUT = httpx.Timeout(300.0, connect=15.0)
 
+# Token usage of every chat call in this process, for cost reporting and benchmarks.
+USAGE: list[dict[str, Any]] = []
+
 
 class MetaAPIError(RuntimeError):
     pass
@@ -70,6 +73,7 @@ async def chat_json(
         r = await client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=body)
     if r.status_code >= 400:
         raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
+    USAGE.append({"model": model, **(r.json().get("usage") or {})})
     message = r.json()["choices"][0]["message"]
     text = message.get("content") or ""
     try:
@@ -104,6 +108,7 @@ async def chat(
         r = await client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=body)
     if r.status_code >= 400:
         raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
+    USAGE.append({"model": model, **(r.json().get("usage") or {})})
     return r.json()["choices"][0]["message"]
 
 

@@ -56,11 +56,22 @@ uv run pytest
 uv run python tests/fixtures/make_ui_session.py   # stand-in session at /#/s/uifixture0000001 for UI work without API calls
 ```
 
+## Benchmark: Muse Wonder vs Claude Opus 5.5
+
+`bench/compare.py` runs the same photo through both agents with everything identical except the reasoning model: same prompts, SAM 3.1 calls, checks and agent code. Claude is reached through `bench/claude_adapter.py`, which translates the agents' messages to the Anthropic Messages API. The product itself only uses Meta models.
+
+```bash
+uv run --group bench python bench/compare.py photo.jpg --prompt "How does this work?"
+```
+
+It reports identification, part and SAM-grounding counts, leftover geometry issues, build time, tokens, and what the guide did for three prompts. Each run is saved as a session you can open in the viewer. Needs `MODEL_API_KEY` and `ANTHROPIC_API_KEY`.
+
 ## Layout
 
 ```
 src/magneye/   FastAPI app, Meta Model API client, agent loop, builder + guide agents, checks, SAM grounding
 web/           React + three.js viewer
 gpu/           SAM 3D Objects endpoint for Modal
+bench/         Muse Wonder vs Claude Opus 5.5 benchmark (not part of the product)
 tests/         Backend + agent tests (scripted fake model) and a UI fixture session
 ```

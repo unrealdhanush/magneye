@@ -26,6 +26,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
+bench = [
+    "anthropic>=2.3.0",
+]
 dev = [
     "playwright>=1.64.1",
     "pytest>=9.2.0",
