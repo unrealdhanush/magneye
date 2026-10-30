@@ -44,6 +44,12 @@ def geometry_issues(anatomy: dict[str, Any]) -> list[str]:
                 issues.append(f"{p['id']} sticks out of the object along {axis} "
                               f"(spans {lo[i]:.0f}..{hi[i]:.0f} mm, object is ±{dims[i] / 2:.0f} mm).")
                 break
+    for p in parts:
+        if p["shape"] in ("disc", "ring", "gear", "spiral"):
+            a, b = sorted(p["size_mm"])[1:]
+            if a > 0 and b / a > 1.3:
+                issues.append(f"{p['id']} is a round {p['shape']} but its diameters differ ({a:.0f} vs {b:.0f} mm); "
+                              f"a SAM box may have caught neighbouring parts.")
     internal = [p for p in parts if p["kind"] == "internal"]
     for i, a in enumerate(internal):
         for b in internal[i + 1:]:

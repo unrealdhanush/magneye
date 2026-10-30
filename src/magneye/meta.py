@@ -6,6 +6,7 @@ import base64
 import json
 import re
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -50,15 +51,14 @@ async def chat_json(
     system: str,
     user_text: str,
     image_jpeg: bytes | None,
+    more_images: Sequence[bytes] = (),
     schema_name: str,
     schema: dict[str, Any],
     reasoning_effort: str = "medium",
     max_tokens: int = 16000,
 ) -> dict[str, Any]:
-    """One Chat Completions call that must return JSON matching `schema`."""
-    content: list[dict[str, Any]] = []
-    if image_jpeg is not None:
-        content.append({"type": "image_url", "image_url": {"url": data_url(image_jpeg), "detail": "high"}})
+    """One Chat Completions call that must return JSON matching `schema`. `more_images` follow the main image."""
+    content = [image_part(jpeg) for jpeg in ([image_jpeg] if image_jpeg is not None else []) + list(more_images)]
     content.append({"type": "text", "text": user_text})
     body = {
         "model": model,

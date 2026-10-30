@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 MATERIALS = ["plastic", "metal", "pcb", "battery", "rubber", "glass", "magnet", "fabric", "fluid", "organic", "ceramic", "other"]
@@ -112,7 +113,9 @@ ANATOMY_SCHEMA = _obj(
 
 ANATOMY_SYSTEM = f"""You are Magneye, an engineer who can see inside things. Given one photo of an object and the user's prompt, identify the object and reconstruct its internal anatomy as structured data a 3D viewer will render.
 
-Coordinate frame (millimetres, origin at the object's centre): treat the photo as the front view. +x points to the image's right, +y to the image's top, +z out of the image toward the camera. dimensions_mm is the object's full extent along x, y, z. Every part's center_mm and size_mm are in this frame and must fit inside the object's extent. rotation_deg is XYZ Euler rotation of the part's own shape.
+Coordinate frame (millimetres, origin at the object's centre): treat the photo as the front view. +x points to the image's right, +y to the image's top, +z out of the image toward the camera. dimensions_mm is the object's full extent along x, y, z. Every part's center_mm and size_mm are in this frame and must fit inside the object's extent.
+
+Orientation: size_mm is always the part's extent along the object's x, y and z axes as it sits in the object, never in the part's own frame. Round shapes orient themselves from it: a disc, ring, gear or spiral faces along its thinnest dimension, and a cylinder, cone, capsule or coil runs along the dimension that differs from the other two. So a watch dial facing the camera is a disc of [30, 30, 1] and a crown sticking out to the right is a cylinder of [6, 4, 4], both with rotation_deg [0, 0, 0]. rotation_deg (XYZ Euler) is only for tilts off those axes, such as a pusher angled at 30 degrees; never use it to stand a shape up or turn it to face the camera. Components follow the same rules.
 
 Parts:
 - 12 to 28 parts. Include the outer housing pieces as kind "exterior", plus every functionally important internal component as kind "internal" (boards, sensors, actuators, batteries, springs, mechanisms, fasteners that matter for disassembly).
@@ -122,7 +125,7 @@ Parts:
 - sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "thumbstick", "button", "strap", "lens"; bad: "Oculus menu button", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.
 - object.sam_prompt: the generic everyday noun for the whole object, 1 or 2 words, never a brand (good: "game controller", "camera", "kettle"; bad: "Oculus Touch VR controller").
 - components: how the part looks, as 2 to 5 primitives, so the 3D view reads as the real thing rather than one block. offset_mm is each primitive's centre relative to the part's centre, in the same axes; together they should fill the part's size_mm. Examples: thumbstick module = metal housing box + cylinder shaft + two small cylinder potentiometer drums on adjacent sides; circuit board = thin pcb plate + a few small box chips + a connector; battery = cylinder body + small metal disc terminal; trigger = curved capsule blade + small cylinder pivot. Use [] for parts that really are one simple shape (a cover, a ring, a button cap).
-- basis: where your knowledge of this part comes from. "seen" = visible in the photo; "documented" = described in the reference research below (teardown, service notes, specs); "inferred" = neither, reasoned from how such objects are usually built.
+- basis: where your knowledge of this part comes from. "seen" = visible in the photo or a reference view; "documented" = described in the reference research below (teardown, service notes, specs); "inferred" = neither, reasoned from how such objects are usually built.
 - Shapes "gear" (a toothed wheel; size_mm is diameter, diameter, thickness) and "spiral" (a flat spiral spring such as a hairspring or mainspring) exist for mechanisms; use them instead of discs where they apply.
 - confidence (0 to 1) is how sure you are this part exists as described in this specific model. Use well-known teardown knowledge when you recognise the exact product; otherwise infer from the category and say so in caveats.
 
@@ -147,22 +150,50 @@ Prefer teardowns and service documentation over listings and marketing. If docum
 
 Budget: run at most 6 searches, the most targeted first (teardown or exploded view, then specifications, then common failures).
 
-End with a "Sources" section: a numbered list of the pages you actually used, one per line as "N. Title — URL"."""
+End with a "Sources" section: a numbered list of the pages you actually used, one per line as "N. Title — URL".
+
+Then a last line "Photo search: <maker and model in 2 to 5 words>", the query that would find photos of this exact product (for example "Rolex Daytona" or "Oculus Touch controller")."""
 
 
 def research_question(prompt: str) -> str:
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}\n\nResearch the object in this photo and write the blueprint brief."
 
 
-def anatomy_user_text(prompt: str, brief: str | None = None) -> str:
+def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[str, Any]] | None = None) -> str:
     reference = (f"\n\nReference research from the web (teardowns, service notes, specs). Prefer it over memory for internal "
                  f"layout, sizes and failure modes, and mark parts it describes as basis \"documented\":\n<research>\n{brief}\n</research>"
                  if brief else "")
+    if views:
+        listed = "; ".join(f"image {i + 2} = {v['view'].replace('_', ' ')} view ({v['note']})" for i, v in enumerate(views))
+        reference += (f"\n\nThe first image is the user's photo: it is the front view and defines the coordinate frame. The others are "
+                      f"reference photos of the same product from other angles: {listed}. Use them for depth (z), the side profile, "
+                      f"the back and parts the front photo hides; parts visible in them are basis \"seen\" but get sam_prompt null "
+                      f"unless they are also visible in the user's photo.")
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}{reference}\n\nReconstruct this object's anatomy."
 
 
+def photo_query(brief: str) -> tuple[str, str | None]:
+    """Split the research brief's closing "Photo search:" line off: (brief, query or None)."""
+    m = re.search(r"^\W*Photo search:\W*(.+?)\W*$", brief, re.M | re.I)
+    if not m:
+        return brief, None
+    return (brief[:m.start()] + brief[m.end():]).strip(), m.group(1).strip() or None
+
+
+ROUND = {"cylinder", "disc", "ring", "cone", "capsule", "coil", "gear", "spiral"}
+
+
+def _quarter_turns_only(rotation: list[float]) -> bool:
+    return any(rotation) and all(abs(a - round(a / 90) * 90) < 1e-6 for a in rotation)
+
+
 def sanitize(anatomy: dict[str, Any]) -> dict[str, Any]:
-    """Drop references to parts that do not exist, so the viewer never receives dangling ids."""
+    """Drop references to parts that do not exist, so the viewer never receives dangling ids. Round shapes orient
+    themselves from size_mm, so a whole quarter-turn rotation on one only turns it a second time; drop it."""
+    for p in anatomy.get("parts", []):
+        for shape in [p, *(p.get("components") or [])]:
+            if shape.get("shape") in ROUND and _quarter_turns_only(shape.get("rotation_deg") or []):
+                shape["rotation_deg"] = [0, 0, 0]
     ids = {p["id"] for p in anatomy.get("parts", [])}
     anatomy["connections"] = [c for c in anatomy.get("connections", []) if c["from"] in ids and c["to"] in ids]
     for s in anatomy.get("scenarios", []):

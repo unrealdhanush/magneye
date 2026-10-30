@@ -10,6 +10,7 @@ export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'do
 
 const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }> = {
   research: { label: 'Research teardowns', model: 'Wonder · web', orb: 'searching' },
+  reference_views: { label: 'Find other angles', model: 'Wonder · Commons', orb: 'searching' },
   draft: { label: 'Draft anatomy', model: 'Muse Wonder', orb: 'solving' },
   cache: { label: 'Reuse anatomy', model: 'cache', orb: 'working' },
   find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },
@@ -145,11 +146,14 @@ const BASIS: Record<'seen' | 'documented' | 'inferred', { label: string; tone: s
   inferred: { label: 'inferred', tone: 'bg-ink/5 text-muted' },
 }
 
+const hostOf = (url: string) => url.split('//')[1]?.split('/')[0].replace(/^www\./, '') ?? url
+
 /** How much of the anatomy is seen, documented by cited sources, or inferred, plus the sources themselves. */
 function Provenance({ anatomy }: { anatomy: Anatomy }) {
   const counts = { seen: 0, documented: 0, inferred: 0 }
   for (const p of anatomy.parts) counts[p.grounded ? 'seen' : p.basis === 'documented' ? 'documented' : p.basis === 'seen' ? 'seen' : 'inferred']++
   const sources = anatomy.research?.sources ?? []
+  const refs = anatomy.references ?? []
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1 font-mono text-caption2 leading-5">
@@ -157,6 +161,27 @@ function Provenance({ anatomy }: { anatomy: Anatomy }) {
           <span key={k} className={`rounded-full px-1 ${BASIS[k].tone}`}><span className="tabular">{counts[k]}</span> {BASIS[k].label}</span>
         ))}
       </div>
+      {refs.length > 0 && (
+        <div className="space-y-0.5">
+          <p className="text-footnote text-muted">Also built from {refs.length === 1 ? 'this view' : 'these views'}</p>
+          <ul className="flex flex-wrap gap-1">
+            {refs.map(r => (
+              <li key={r.page_url}>
+                <a href={r.page_url} target="_blank" rel="noopener noreferrer"
+                  title={[r.title, r.note, r.license && `${r.license}${r.author ? ` · ${r.author}` : ''}`].filter(Boolean).join('\n')}
+                  className="block w-10 text-caption2 text-muted hover:text-ink">
+                  {r.image_url
+                    ? <img src={r.image_url} alt={`${r.view.replace('_', ' ')} view: ${r.title}`} loading="lazy"
+                        className="h-8 w-10 rounded-sm bg-card object-cover shadow-ring" />
+                    : <span className="grid h-8 w-10 place-items-center rounded-sm bg-card px-0.5 shadow-ring">{hostOf(r.page_url)}</span>}
+                  <span className="mt-px block truncate capitalize text-ink">{r.view.replace('_', ' ')}</span>
+                  <span className="block truncate">{r.license ?? 'Web photo'}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {sources.length > 0 && (
         <details className="text-footnote">
           <summary className="cursor-pointer text-ink">Blueprint sources ({sources.length})</summary>

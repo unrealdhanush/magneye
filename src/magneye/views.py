@@ -1,0 +1,201 @@
+"""Reference views: photos of the same product from other angles, found once research has identified it.
+
+The user's photo stays the front view and defines the coordinate frame. Other angles (side, back, top) let the
+draft see depth, the back and the side profile instead of guessing them. Candidates come from Wikimedia Commons
+(freely licensed, with author and licence, so the UI can show them) and from the photos on the pages the research
+cited (used only as model input and cited by link). Muse Wonder vets them in one call: does it have the
+same body shape, which side faces the camera, is the whole object in view.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import io
+import ipaddress
+import re
+from itertools import zip_longest
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import httpx
+from PIL import Image, ImageOps
+
+from . import meta
+
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+HEADERS = {"User-Agent": "Magneye/0.1 (https://github.com/unrealdhanush/magneye)"}
+FETCH_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
+PAGE_LIMIT = 600_000
+IMAGE_LIMIT = 6_000_000
+MAX_CANDIDATES = 12
+MAX_COMMONS = 6
+PER_PAGE = 4
+MAX_VIEWS = 3
+VIEWS = ["front", "back", "left", "right", "top", "bottom", "three_quarter", "detail", "other"]
+# Views that add something the front photo cannot show, best first.
+USEFUL = ["left", "right", "back", "top", "bottom", "three_quarter"]
+
+VET_SYSTEM = """You vet reference photos for Magneye, which builds 3D models of objects. Image 0 is the user's photo; it defines the front view. Images 1 to N are candidate photos found online.
+
+For each candidate:
+- same_shape: true if it shows an object with the same body shape as image 0: the same model, or a variant that differs only in colour, material, dial or finish. A different generation, size or redesigned body is false.
+- view: which side of the object faces the camera, relative to image 0. "front" = the side facing the camera in image 0; "left"/"right" = the side that is on the left/right in image 0; "back", "top", "bottom"; "three_quarter" for an angled view showing two sides; "detail" for a close-up of one feature; "other" for anything else (packaging, people using it, no object at all). A photo of a few units side by side (a comparison) still gets the view they are shown from.
+- clean: the whole object is in view, not cut off and not mostly hidden by hands or other things.
+- note: what it shows that image 0 does not, in under 12 words.
+Output only JSON matching the schema."""
+
+VET_SCHEMA = {
+    "type": "object",
+    "properties": {"candidates": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer"},
+            "same_shape": {"type": "boolean"},
+            "view": {"type": "string", "enum": VIEWS},
+            "clean": {"type": "boolean"},
+            "note": {"type": "string"},
+        },
+        "required": ["index", "same_shape", "view", "clean", "note"],
+    }}},
+    "required": ["candidates"],
+}
+
+_OG_TAG = re.compile(r"<meta\b[^>]*(?:property|name)\s*=\s*[\"'](?:og:image(?::secure_url)?|twitter:image)[\"'][^>]*>", re.I)
+_CONTENT = re.compile(r"content\s*=\s*[\"']([^\"']+)", re.I)
+_IMG_SRC = re.compile(r"<img\b[^>]*?\b(?:data-src|src)\s*=\s*[\"']([^\"']+\.(?:jpe?g|png|webp)(?:\?[^\"']*)?)[\"']", re.I)
+_NOT_PHOTO = re.compile(r"logo|icon|sprite|avatar|badge|flag|payment|banner|placeholder|\.svg", re.I)
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def _public(url: str) -> bool:
+    """Only plain http(s) URLs on public hosts; found URLs never reach this machine's own network."""
+    u = urlparse(url)
+    if u.scheme not in ("http", "https") or not u.hostname or u.hostname == "localhost" or u.hostname.endswith(".local"):
+        return False
+    try:
+        return ipaddress.ip_address(u.hostname).is_global
+    except ValueError:
+        return True
+
+
+async def _fetch(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, bytes] | None:
+    """(content type, body) of a public URL, or None if it fails or is larger than `limit` bytes."""
+    if not _public(url):
+        return None
+    try:
+        async with client.stream("GET", url) as r:
+            if r.status_code != 200 or not _public(str(r.url)):
+                return None
+            body = b""
+            async for chunk in r.aiter_bytes():
+                body += chunk
+                if len(body) > limit:
+                    return None
+            return r.headers.get("content-type", "").split(";")[0].strip(), body
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def _text(field: dict[str, Any] | None) -> str:
+    return html.unescape(_TAGS.sub("", (field or {}).get("value", ""))).strip()
+
+
+async def _commons(client: httpx.AsyncClient, query: str) -> list[dict[str, Any]]:
+    params = {"action": "query", "format": "json", "generator": "search", "gsrsearch": query, "gsrnamespace": 6,
+              "gsrlimit": 8, "prop": "imageinfo", "iiprop": "url|extmetadata|mime", "iiurlwidth": 640}
+    try:
+        r = await client.get(COMMONS_API, params=params)
+        pages = (r.json().get("query") or {}).get("pages") or {}
+    except (httpx.HTTPError, ValueError):
+        return []
+    out = []
+    for p in sorted(pages.values(), key=lambda p: p.get("index", 0)):
+        info = (p.get("imageinfo") or [{}])[0]
+        if info.get("mime") not in ("image/jpeg", "image/png", "image/webp"):
+            continue
+        meta_ = info.get("extmetadata") or {}
+        out.append({"origin": "commons", "title": p["title"].removeprefix("File:").rsplit(".", 1)[0],
+                    "page_url": info.get("descriptionurl"), "image_url": info.get("thumburl") or info.get("url"),
+                    "license": _text(meta_.get("LicenseShortName")), "author": _text(meta_.get("Artist"))[:120]})
+    return out
+
+
+async def _page_images(client: httpx.AsyncClient, source: dict[str, str]) -> list[dict[str, Any]]:
+    """Photos on a cited page: the preview image it declares (og:image), then the first few in its gallery."""
+    got = await _fetch(client, source["url"], PAGE_LIMIT)
+    if not got or "html" not in got[0]:
+        return []
+    page = got[1].decode("utf-8", "ignore")
+    tag = _OG_TAG.search(page)
+    content = tag and _CONTENT.search(tag.group(0))
+    urls = [content.group(1)] if content else []
+    urls += [u for u in _IMG_SRC.findall(page) if not _NOT_PHOTO.search(u)]
+    found = list(dict.fromkeys(urljoin(source["url"], html.unescape(u)) for u in urls))[:PER_PAGE]
+    return [{"origin": "web", "title": source["title"], "page_url": source["url"], "image_url": u} for u in found]
+
+
+def _normalize(raw: bytes) -> bytes | None:
+    """Small upright RGB JPEG, or None for anything that is not a usable photo (icons, logos, broken files)."""
+    try:
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    except Exception:
+        return None
+    if min(im.size) < 240:
+        return None
+    im.thumbnail((640, 640))
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=85)
+    return out.getvalue()
+
+
+async def _download(client: httpx.AsyncClient, cand: dict[str, Any]) -> dict[str, Any] | None:
+    got = await _fetch(client, cand["image_url"], IMAGE_LIMIT)
+    jpeg = got and got[0].startswith("image/") and _normalize(got[1])
+    return {**cand, "jpeg": jpeg} if jpeg else None
+
+
+async def candidates(query: str | None, sources: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Downloaded candidate photos: Commons first (clean licensing), then photos from the pages research cited,
+    taken round-robin so one big gallery cannot crowd out the other pages."""
+    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, headers=HEADERS, follow_redirects=True) as client:
+        commons, *pages = await asyncio.gather(_commons(client, query) if query else asyncio.sleep(0, []),
+                                               *(_page_images(client, s) for s in sources[:8]))
+        web = [c for rank in zip_longest(*pages) for c in rank if c]
+        listed = [*commons[:MAX_COMMONS], *web]
+        unique = list({c["image_url"]: c for c in reversed(listed)}.values())[::-1]
+        got = await asyncio.gather(*(_download(client, c) for c in unique[:MAX_CANDIDATES + 6]))
+    return [c for c in got if c][:MAX_CANDIDATES]
+
+
+def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Up to MAX_VIEWS distinct useful views with the same body shape; clean shots and Commons photos win ties."""
+    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    for v in verdicts:
+        i = v.get("index", 0) - 1
+        if not (0 <= i < len(cands)) or not v.get("same_shape") or v.get("view") not in USEFUL:
+            continue
+        rank = (int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
+        if v["view"] not in best or rank > best[v["view"]][0]:
+            best[v["view"]] = (rank, {**cands[i], "view": v["view"], "note": v.get("note", "")})
+    ordered = sorted(best.values(), key=lambda rv: (-rv[0][0], USEFUL.index(rv[1]["view"])))
+    return [c for _, c in ordered[:MAX_VIEWS]]
+
+
+async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str) -> dict[str, Any]:
+    """Vetted reference views: {"views": [...with jpeg...], "considered": n}."""
+    cands = await candidates(query, sources)
+    if not cands:
+        return {"views": [], "considered": 0}
+    verdict = await meta.chat_json(
+        model=model, system=VET_SYSTEM, image_jpeg=image, more_images=[c["jpeg"] for c in cands],
+        user_text=f"Vet candidates 1 to {len(cands)}.", schema_name="vetting", schema=VET_SCHEMA,
+        reasoning_effort="low", max_tokens=3000,
+    )
+    return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
+
+
+def cite(view: dict[str, Any]) -> dict[str, Any]:
+    """What the anatomy keeps for the UI: Commons photos can be shown with their licence; web photos are only linked."""
+    keep = ["origin", "view", "title", "page_url", "note"] + (["image_url", "license", "author"] if view["origin"] == "commons" else [])
+    return {k: view.get(k) for k in keep}

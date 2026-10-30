@@ -12,6 +12,7 @@ from PIL import Image
 from . import meta
 
 MAX_PHRASES = 10
+FACING_ROUND = {"disc", "ring", "gear", "spiral"}
 
 Matches = list[dict[str, Any]]
 
@@ -125,10 +126,13 @@ async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any],
         if not candidates:
             continue
         best = min(candidates, key=lambda m: _dist(_center(m["box"]), expected))
-        taken.add((part["sam_prompt"], best["object_id"]))
         mm = frame.box_to_mm(best["box"])
-        part["center_mm"][0], part["center_mm"][1] = mm["center_mm"]
         bw, bh = mm["size_mm"]
+        # A round part facing the camera has a square box; a long one means SAM caught neighbouring parts too.
+        if part["shape"] in FACING_ROUND and part["size_mm"][2] <= min(part["size_mm"][:2]) and max(bw, bh) > 1.3 * max(min(bw, bh), 0.1):
+            continue
+        taken.add((part["sam_prompt"], best["object_id"]))
+        part["center_mm"][0], part["center_mm"][1] = mm["center_mm"]
         # Only trust SAM's extent when it is in the same ballpark as Wonder's estimate (rotated parts skew boxes).
         if 0.33 < bw / max(part["size_mm"][0], 0.1) < 3 and 0.33 < bh / max(part["size_mm"][1], 0.1) < 3:
             part["size_mm"][0], part["size_mm"][1] = bw, bh

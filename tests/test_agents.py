@@ -7,7 +7,7 @@ import json
 
 from PIL import Image
 
-from magneye import builder, guide, meta
+from magneye import builder, guide, meta, views
 from magneye.checks import geometry_issues
 from magneye.ground import SegmentCache
 
@@ -86,10 +86,17 @@ def test_builder_verifies_and_edits(monkeypatch):
         {"content": "", "tool_calls": [_call("finish", {"summary": "Verified against the photo"})]},
     ])
     async def fake_research(**_):
-        return {"text": "Teardown notes: potentiometer stick module under the faceplate.",
+        return {"text": "Teardown notes: potentiometer stick module under the faceplate.\n\nPhoto search: Acme controller",
                 "sources": [{"url": "https://www.ifixit.com/Teardown/x", "title": "Teardown"}], "searches": ["controller teardown"]}
 
+    async def fake_views(*, query, **_):
+        assert query == "Acme controller"
+        return {"views": [{"origin": "commons", "view": "left", "title": "Acme side", "page_url": "https://commons.wikimedia.org/wiki/File:A.jpg",
+                           "image_url": "https://upload.wikimedia.org/a.jpg", "license": "CC0", "author": "Someone", "note": "grip depth",
+                           "jpeg": photo}], "considered": 4}
+
     monkeypatch.setattr(meta, "research", fake_research)
+    monkeypatch.setattr(views, "find", fake_views)
     monkeypatch.setattr(meta, "chat_json", fake_draft)
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
@@ -100,6 +107,11 @@ def test_builder_verifies_and_edits(monkeypatch):
 
     assert [p["id"] for p in result["parts"]] == ["shell", "stick", "pots", "battery"]
     assert result["research"]["sources"][0]["url"] == "https://www.ifixit.com/Teardown/x"
+    assert "Photo search" not in result["research"]["notes"]
+    assert result["references"] == [{"origin": "commons", "view": "left", "title": "Acme side", "note": "grip depth",
+                                     "page_url": "https://commons.wikimedia.org/wiki/File:A.jpg",
+                                     "image_url": "https://upload.wikimedia.org/a.jpg", "license": "CC0", "author": "Someone"}]
+    assert any(e.get("tool") == "reference_views" and e.get("text", "").startswith("1 reference view of 4 photos checked: left") for e in events)
     assert any(e.get("tool") == "research" and e.get("text", "").startswith("1 search, 1 source cited (ifixit.com)") for e in events)
     assert next(p for p in result["parts"] if p["id"] == "stick")["center_mm"] == [0, 20, 20]
     texts = [e.get("text", "") for e in events if e["type"] == "step"]
@@ -154,3 +166,66 @@ def test_geometry_flags_outside_overlap_and_outward_access():
     assert any("antenna sticks out" in i for i in issues)
     assert any("pots and pots_twin occupy the same space" in i for i in issues)
     assert any("access path removes battery" in i for i in issues)
+
+
+def test_reference_views_pick_distinct_useful_views():
+    cands = [{"origin": "web", "page_url": "https://a"}, {"origin": "commons", "page_url": "https://b"},
+             {"origin": "commons", "page_url": "https://c"}, {"origin": "web", "page_url": "https://d"}]
+    verdicts = [{"index": 1, "same_shape": True, "view": "left", "clean": True, "note": ""},
+                {"index": 2, "same_shape": True, "view": "left", "clean": True, "note": ""},
+                {"index": 3, "same_shape": True, "view": "front", "clean": True, "note": ""},
+                {"index": 4, "same_shape": False, "view": "back", "clean": True, "note": ""},
+                {"index": 9, "same_shape": True, "view": "top", "clean": True, "note": ""}]
+    picked = views.pick(cands, verdicts)
+    # One per view, Commons wins the tie, the front view adds nothing, other products and bad indexes are dropped.
+    assert [(v["view"], v["page_url"]) for v in picked] == [("left", "https://b")]
+    assert views.cite({**picked[0], "jpeg": b"x"}).get("jpeg") is None
+    assert "image_url" not in views.cite({"origin": "web", "view": "back", "image_url": "https://x/y.jpg", "page_url": "https://x"})
+
+
+def test_reference_views_only_fetch_public_urls():
+    assert views._public("https://upload.wikimedia.org/a.jpg")
+    for url in ["http://localhost:8787/api", "http://127.0.0.1/", "http://192.168.1.4/x.jpg", "file:///etc/passwd", "http://printer.local/"]:
+        assert not views._public(url)
+
+
+def test_loop_nudges_once_when_the_model_narrates_instead_of_finishing(monkeypatch):
+    from magneye.agent import Tool, ToolResult, params, run_loop
+
+    async def finish(_):
+        return ToolResult("ok", "Done", stop=True)
+
+    script = Script([{"content": "Now I'll apply the fixes.", "tool_calls": []},
+                     {"content": "", "tool_calls": [_call("finish", {})]}])
+    monkeypatch.setattr(meta, "chat", script)
+    events, emit = _collect()
+    messages = [{"role": "user", "content": "go"}]
+    asyncio.run(run_loop(agent="builder", model="m", messages=messages, tools=[Tool("finish", "", params({}), finish)],
+                         emit=emit, until="finish"))
+    assert len(script.seen) == 2 and "call finish" in script.seen[1][0][-1]["content"]
+    assert events[-1]["tool"] == "finish"
+
+
+def test_builder_moves_the_body_in_one_call(monkeypatch):
+    async def fake_draft(**_):
+        draft = copy.deepcopy(ANATOMY)
+        draft["parts"].append(_part("strap", "accessory", center=(0, -80, 0), size=(20, 40, 4), layer=0))
+        return draft
+
+    script = Script([{"content": "", "tool_calls": [_call("move_parts", {"dx_mm": 0, "dy_mm": 17, "dz_mm": 0})]},
+                     {"content": "", "tool_calls": [_call("finish", {"summary": "ok"})]}])
+    monkeypatch.setattr(meta, "research", _no_research)
+    monkeypatch.setattr(meta, "chat_json", fake_draft)
+    monkeypatch.setattr(meta, "chat", script)
+    monkeypatch.setattr(meta, "segment", _fake_segment)
+    events, emit = _collect()
+    photo = _photo()
+    result = asyncio.run(builder.build(image=photo, prompt="", emit=emit, model="m", reasoning="low", cache=SegmentCache(photo)))
+    centers = {p["id"]: p["center_mm"] for p in result["parts"]}
+    # Every body part moved up 17 mm; the accessory stayed where it was.
+    assert centers["battery"] == [0, -33, 0] and centers["stick"] == [0, 17, 20] and centers["strap"] == [0, -80, 0]
+    assert any(e.get("text") == "Moved 5 parts by (+0, +17, +0) mm" for e in events)
+
+
+async def _no_research(**_):
+    raise meta.MetaAPIError("offline")

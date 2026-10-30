@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import meta
+from . import meta, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches
@@ -20,14 +20,14 @@ Tools:
 - find_in_photo(phrase): SAM 3.1 segments a noun phrase in the photo and reports matches on the object, as centre/size in the object's millimetre frame (x right, y up, origin at the object's centre). Use it to confirm parts you marked visible, find their real positions, and discover visible parts you missed. "No matches" means the part is probably not visible: set its sam_prompt to null, or remove it if it was exterior and imaginary. SAM wants plain generic nouns ("button", "strap", "lens"); brand names and labels match nothing, so retry a miss with a simpler noun before concluding. SAM finds whatever best fits the phrase, so a match far from where you expect is probably a different part: compare positions before trusting it.
 - check_geometry(): lists physical problems (parts outside the object, internal parts in the same space, access paths that dig outward).
 - view_layout(): shows every part's front-view footprint drawn over the photo (exterior cyan, internal orange). Use it to judge proportions and placement.
+- move_parts(dx_mm, dy_mm, dz_mm, ids): shift a group of parts together (default: every part except accessories). When SAM shows the whole body sits off where you drafted it, one move_parts call fixes every part at once; do not rewrite each centre with update_parts.
 - update_parts / add_part / remove_part: edit the anatomy. Put every part change into ONE update_parts call. Keep ids stable; give a short reason per part.
 - finish(summary): call when the anatomy is consistent with the photo and check_geometry reports nothing serious.
 
-Work in at most four turns:
+Work in at most three turns:
 1. In one turn, call find_in_photo for every part you marked visible, plus check_geometry and view_layout.
-2. Retry any misses with simpler nouns, if needed, in one turn.
-3. Apply all fixes in one update_parts call (plus any add_part/remove_part).
-4. finish.
+2. Retry any misses with simpler nouns, if needed, and call move_parts if the whole body is offset, in one turn.
+3. Apply the remaining fixes in one update_parts call (plus any add_part/remove_part), using positions after any move, and call finish in that same turn.
 Do not invent precision you cannot see; hidden internals stay inferred."""
 
 
@@ -54,6 +54,26 @@ async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dic
     return found if found["text"] else None
 
 
+async def _views(*, image: bytes, query: str | None, sources: list[dict[str, str]], emit: Emit, model: str) -> list[dict[str, Any]]:
+    """Vetted photos of the same product from other angles; [] when none turn up."""
+    if not query and not sources:
+        return []
+    await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "running"})
+    try:
+        found = await views.find(image=image, query=query, sources=sources, model=model)
+    except meta.MetaAPIError as e:
+        await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
+                    "text": f"Reference photos unavailable ({e}); building from the one photo"})
+        return []
+    picked = found["views"]
+    where = list(dict.fromkeys("Wikimedia Commons" if v["origin"] == "commons" else _host(v["page_url"]) for v in picked))
+    await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "done",
+                "text": f"{_count(len(picked), 'reference view', 'reference views')} of {found['considered']} photos checked: "
+                        f"{', '.join(v['view'].replace('_', ' ') for v in picked)} ({', '.join(where)})" if picked
+                        else f"No usable reference views among {_count(found['considered'], 'photo', 'photos')}"})
+    return picked
+
+
 def _count(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
@@ -66,14 +86,21 @@ async def build(
     *, image: bytes, prompt: str, emit: Emit, model: str, reasoning: str, cache: SegmentCache, max_turns: int = 6,
 ) -> dict[str, Any]:
     research = await _research(image=image, prompt=prompt, emit=emit, model=model)
+    query = None
+    if research:
+        research["text"], query = A.photo_query(research["text"])
+    picked = await _views(image=image, query=query, sources=research["sources"] if research else [], emit=emit, model=model)
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
-        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"]),
-        image_jpeg=image, schema_name="anatomy", schema=A.ANATOMY_SCHEMA, reasoning_effort=reasoning, max_tokens=24000,
+        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"], picked),
+        image_jpeg=image, more_images=[v["jpeg"] for v in picked], schema_name="anatomy", schema=A.ANATOMY_SCHEMA,
+        reasoning_effort=reasoning, max_tokens=24000,
     ))
     if research:
         # Kept with the anatomy so the guide can answer from the same references and the UI can cite them.
         draft["research"] = {"notes": research["text"][:6000], "sources": research["sources"][:12], "searches": research["searches"]}
+    if picked:
+        draft["references"] = [views.cite(v) for v in picked]
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "done",
                 "text": f"Drafted {draft['object']['name']} with {len(draft['parts'])} parts"})
     await emit({"type": "anatomy", "anatomy": draft})
@@ -111,6 +138,19 @@ async def build(
         overlay = layout_overlay(image, frame, work)
         return ToolResult("The layout overlay is attached in the next message.", f"Drew {len(work['parts'])} parts over the photo",
                           attach=[meta.image_part(overlay), {"type": "text", "text": "Your current layout over the photo."}])
+
+    async def move_parts(a: dict[str, Any]) -> ToolResult:
+        try:
+            d = [float(a.get(k) or 0) for k in ("dx_mm", "dy_mm", "dz_mm")]
+        except (TypeError, ValueError):
+            return ToolResult("dx_mm, dy_mm and dz_mm must be numbers.", "move_parts rejected", ok=False)
+        ids = set(a.get("ids") or [p["id"] for p in work["parts"] if p["kind"] != "accessory"]) & set(parts)
+        for pid in ids:
+            parts[pid]["center_mm"] = [round(c + v, 1) for c, v in zip(parts[pid]["center_mm"], d)]
+        if ids:
+            await changed()
+        return ToolResult(json.dumps({"moved": sorted(ids)}),
+                          f"Moved {_count(len(ids), 'part', 'parts')} by ({', '.join(f'{v:+g}' for v in d)}) mm", ok=bool(ids))
 
     async def update_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
@@ -155,6 +195,9 @@ async def build(
              params({"phrase": {"type": "string"}}), find_in_photo),
         Tool("check_geometry", "List physical plausibility problems in the current anatomy.", params({}), check_geometry),
         Tool("view_layout", "See the current part layout drawn over the photo.", params({}), view_layout),
+        Tool("move_parts", "Shift a group of parts by the same offset (default: all parts except accessories).",
+             params({"dx_mm": {"type": "number"}, "dy_mm": {"type": "number"}, "dz_mm": {"type": "number"},
+                     "ids": {"type": "array", "items": {"type": "string"}}}, ["dx_mm", "dy_mm", "dz_mm"]), move_parts),
         Tool("update_parts", "Change fields of several parts in one call.",
              params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, "reason": {"type": "string"}, **editable}, ["id", "reason"])}}),
              update_parts),
@@ -169,7 +212,7 @@ async def build(
     try:
         # The draft needs deep reasoning; the verify turns are mostly bookkeeping on tool results.
         await run_loop(agent="builder", model=model, messages=messages, tools=tools, emit=emit,
-                       max_turns=max_turns, reasoning_effort="low")
+                       max_turns=max_turns, reasoning_effort="low", until="finish")
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "verify", "status": "error",
                     "text": f"Verification stopped ({e}); keeping the latest anatomy"})

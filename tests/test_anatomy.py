@@ -50,3 +50,42 @@ def test_ground_snaps_visible_part_to_sam_box(monkeypatch):
     assert stick["center_mm"][:2] == [16.0, 74.0] and stick["center_mm"][2] == 20
     assert stick["size_mm"][:2] == [12.0, 12.0] and stick["grounded"] is True
     assert "stick" in g["parts"] and g["object_mask_png"].startswith(b"\x89PNG")
+
+
+def test_sanitize_drops_quarter_turns_on_round_shapes():
+    plate = {**_part("plate", size=(30, 30, 1.5)), "shape": "disc", "rotation_deg": [90, 0, 0],
+             "components": [{"shape": "gear", "size_mm": [8, 8, 1], "offset_mm": [0, 0, 0], "rotation_deg": [0, -90, 0]}]}
+    pusher = {**_part("pusher", size=(6, 12, 6)), "shape": "cylinder", "rotation_deg": [30, 0, 0]}
+    board = {**_part("board", size=(30, 2, 50)), "rotation_deg": [90, 0, 0]}
+    A.sanitize({"parts": [plate, pusher, board]})
+    # Round shapes face along their size, so a quarter turn would stand them on edge; real tilts and boxes keep theirs.
+    assert plate["rotation_deg"] == [0, 0, 0] and plate["components"][0]["rotation_deg"] == [0, 0, 0]
+    assert pusher["rotation_deg"] == [30, 0, 0] and board["rotation_deg"] == [90, 0, 0]
+
+
+def test_geometry_flags_oval_round_parts():
+    from magneye.checks import geometry_issues
+    bezel = {**_part("bezel", size=(42, 90, 3)), "shape": "ring", "kind": "exterior"}
+    dial = {**_part("dial", size=(31, 31, 1)), "shape": "disc", "kind": "exterior"}
+    issues = geometry_issues({"object": {"dimensions_mm": [50, 200, 15]}, "parts": [bezel, dial], "failures": []})
+    assert any(i.startswith("bezel is a round ring but its diameters differ (42 vs 90 mm)") for i in issues)
+    assert not any(i.startswith("dial") for i in issues)
+
+
+def test_ground_ignores_oval_boxes_for_round_parts(monkeypatch):
+    anatomy = {"object": {"sam_prompt": "watch", "dimensions_mm": [100, 200, 50]},
+               "parts": [{**_part("bezel", center=(0, 20, 5), size=(40, 40, 3), sam="bezel"), "shape": "ring"}]}
+
+    def match(box):
+        w, h = int(box[2] - box[0]), int(box[3] - box[1])
+        return {"object_id": "1", "box": box, "confidence": 0.9, "mask_bounds": box, "mask_size": [w, h],
+                "mask_svg": "M0 0Z", "coverage": 1.0, "raster": bytes([1]) * (w * h)}
+
+    async def fake_segment(_image, phrase):
+        # The "bezel" box runs down into the bracelet: 80 x 180 px is 40 x 90 mm.
+        return [match([100, 100, 300, 500])] if phrase == "watch" else [match([160, 180, 240, 360])]
+
+    monkeypatch.setattr(G.meta, "segment", fake_segment)
+    g = asyncio.run(G.ground(b"", (400, 600), anatomy))
+    bezel = anatomy["parts"][0]
+    assert "bezel" not in g["parts"] and not bezel.get("grounded") and bezel["size_mm"] == [40, 40, 3]

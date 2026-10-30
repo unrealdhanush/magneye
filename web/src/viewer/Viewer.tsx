@@ -35,7 +35,7 @@ export function Viewer(props: ViewerProps) {
   const floor = -(props.anatomy.object.dimensions_mm[1] * worldScale(props.anatomy)) / 2 - 0.5
   return (
     <Canvas camera={{ position: [3.4, 2.1, 5], fov: 38 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}
-      onPointerMissed={() => props.onSelect(null)}>
+      onCreated={({ gl }) => { gl.localClippingEnabled = true }} onPointerMissed={() => props.onSelect(null)}>
       <StudioEnvironment />
       <hemisphereLight args={['#ffffff', '#445566', 0.35]} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
@@ -406,15 +406,25 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
     const back = extrudeMask(shapes, anatomy, ground, -depth / 2, 0, [FACE.back, FACE.cut])
     return front && back ? { front, back } : null
   }, [anatomy, ground, depth])
+  // With accessories (a bracelet, a cable) the shell is trimmed to the main body; the accessories have pieces of their own.
+  const clip = useMemo(() => {
+    const { center, size, trimmed } = bodyBox(anatomy)
+    if (!trimmed) return null
+    const [cx, cy, hx, hy] = [center[0] * s, center[1] * s, size[0] * s * 0.55, size[1] * s * 0.55]
+    return [new THREE.Plane(new THREE.Vector3(1, 0, 0), hx - cx), new THREE.Plane(new THREE.Vector3(-1, 0, 0), cx + hx),
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), hy - cy), new THREE.Plane(new THREE.Vector3(0, -1, 0), cy + hy)]
+  }, [anatomy, s])
   const materials = useMemo(() => {
     const tone = ground.object && texture.image ? maskColor(texture.image as HTMLImageElement, ground.object) : new THREE.Color('#3a3a3c')
+    // A trimmed shell is open at the cut, so its inside faces have to render too.
+    const common = { transparent: true, clippingPlanes: clip, side: clip ? THREE.DoubleSide : THREE.FrontSide }
     return [
-      new THREE.MeshStandardMaterial({ map: texture, roughness: 0.5, transparent: true }),
-      new THREE.MeshStandardMaterial({ color: tone, roughness: 0.55, transparent: true }),
-      new THREE.MeshStandardMaterial({ color: tone.clone().multiplyScalar(0.45), roughness: 0.85, transparent: true, side: THREE.DoubleSide }),
-      new THREE.MeshStandardMaterial({ color: tone, roughness: 0.55, transparent: true }),
+      new THREE.MeshStandardMaterial({ ...common, map: texture, roughness: 0.5 }),
+      new THREE.MeshStandardMaterial({ ...common, color: tone, roughness: 0.55 }),
+      new THREE.MeshStandardMaterial({ ...common, color: tone.clone().multiplyScalar(0.45), roughness: 0.85, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ ...common, color: tone, roughness: 0.55 }),
     ]
-  }, [texture, ground.object])
+  }, [texture, ground.object, clip])
   const front = useRef<THREE.Mesh>(null), back = useRef<THREE.Mesh>(null)
   const step = useStaggeredExplode(explode, assembleAt, delay)
   const current = useRef(explode)

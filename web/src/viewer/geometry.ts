@@ -3,15 +3,23 @@ import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js'
 import type { Anatomy, Ground, MaskMatch, Part, Vec3 } from '../types'
 
 /**
- * The object's main body in millimetres: every part except accessories (straps, cables, stands), which would
- * otherwise shrink the interesting part to a corner of the view. Without accessories it is the whole object.
+ * The object's main body in millimetres: every part except accessories (a bracelet, a long cable, a stand) when they
+ * make the object much bigger than its body, which would otherwise shrink the interesting part to a corner of the
+ * view. Otherwise it is the whole object.
  */
-export function bodyBox(anatomy: Anatomy): { center: Vec3; size: Vec3 } {
+export function bodyBox(anatomy: Anatomy): { center: Vec3; size: Vec3; trimmed: boolean } {
+  const whole = { center: [0, 0, 0] as Vec3, size: anatomy.object.dimensions_mm, trimmed: false }
   const body = anatomy.parts.filter(p => p.kind !== 'accessory')
-  if (!body.length || body.length === anatomy.parts.length) return { center: [0, 0, 0], size: anatomy.object.dimensions_mm }
-  const lo = [0, 1, 2].map(i => Math.min(...body.map(p => p.center_mm[i] - p.size_mm[i] / 2)))
-  const hi = [0, 1, 2].map(i => Math.max(...body.map(p => p.center_mm[i] + p.size_mm[i] / 2)))
-  return { center: lo.map((v, i) => (v + hi[i]) / 2) as Vec3, size: lo.map((v, i) => hi[i] - v) as Vec3 }
+  if (!body.length || body.length === anatomy.parts.length) return whole
+  const span = (parts: Part[]) => {
+    const lo = [0, 1, 2].map(i => Math.min(...parts.map(p => p.center_mm[i] - p.size_mm[i] / 2)))
+    const hi = [0, 1, 2].map(i => Math.max(...parts.map(p => p.center_mm[i] + p.size_mm[i] / 2)))
+    return { center: lo.map((v, i) => (v + hi[i]) / 2) as Vec3, size: lo.map((v, i) => hi[i] - v) as Vec3 }
+  }
+  const own = span(body), all = span(anatomy.parts)
+  // Compare against all parts (the same estimates), across the photo plane where accessories hang off.
+  if (own.size[0] >= 0.75 * all.size[0] && own.size[1] >= 0.75 * all.size[1]) return whole
+  return { ...own, trimmed: true }
 }
 
 /** World units per millimetre: the main body's longest side becomes 2 units. */

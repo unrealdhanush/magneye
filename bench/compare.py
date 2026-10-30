@@ -109,7 +109,7 @@ async def run(name: str, photo: bytes, size: tuple[int, int], prompt: str) -> di
         "parts_with_components": sum(1 for p in anatomy["parts"] if p.get("components")),
         "scenarios": len(anatomy["scenarios"]), "failures": len(anatomy["failures"]),
         "sam_checks": sum(1 for e in steps if e["tool"] == "find_in_photo"),
-        "edits": sum(1 for e in steps if e["tool"] in ("update_parts", "add_part", "remove_part")),
+        "edits": sum(1 for e in steps if e["tool"] in ("move_parts", "update_parts", "add_part", "remove_part")),
         "finished": any(e["tool"] == "finish" for e in steps),
         "object_grounded": g["object"] is not None, "parts_grounded": len(g["parts"]),
         "geometry_issues_left": len(geometry_issues(anatomy)),

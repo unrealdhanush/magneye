@@ -52,13 +52,18 @@ async def run_loop(
     emit: Emit,
     max_turns: int = 8,
     reasoning_effort: str = "medium",
+    until: str | None = None,
 ) -> str:
     """Run model turns until it answers without tools, a tool stops the loop, or turns run out.
+
+    With `until`, a turn without tool calls is not the end: the model is nudged once to carry on and call that tool,
+    since it sometimes narrates its next step instead of taking it.
 
     `messages` is extended in place so a caller can persist and resume the conversation.
     Returns the model's final text (may be empty when a tool stopped the loop).
     """
     by_name = {t.name: t for t in tools}
+    nudged = False
     for _ in range(max_turns):
         msg = await meta.chat(model=model, messages=messages, tools=[t.spec() for t in tools],
                               reasoning_effort=reasoning_effort)
@@ -67,6 +72,10 @@ async def run_loop(
         if msg.get("content") and calls:
             await emit({"type": "thought", "agent": agent, "text": msg["content"]})
         if not calls:
+            if until and not nudged:
+                nudged = True
+                messages.append({"role": "user", "content": f"Don't stop yet: make your changes with the tools, then call {until}."})
+                continue
             return msg.get("content") or ""
 
         # Tool calls in one turn are independent, so run them concurrently (SAM calls dominate latency).

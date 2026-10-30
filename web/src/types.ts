@@ -67,6 +67,19 @@ export interface Anatomy {
   failures: Failure[]
   caveats: string[]
   research?: { notes: string; sources: { url: string; title: string }[]; searches: string[] }
+  /** Photos of the same product from other angles that the draft saw. Commons photos carry an image and licence. */
+  references?: Reference[]
+}
+
+export interface Reference {
+  origin: 'commons' | 'web'
+  view: string
+  title: string
+  page_url: string
+  note: string
+  image_url?: string
+  license?: string
+  author?: string
 }
 
 export interface MaskMatch {

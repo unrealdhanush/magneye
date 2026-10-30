@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from typing import Any
 
 import anthropic
@@ -97,11 +98,11 @@ async def _call(**params: Any) -> Any:
 
 
 async def chat_json(*, model: str, system: str, user_text: str, image_jpeg: bytes | None, schema_name: str,
-                    schema: dict[str, Any], reasoning_effort: str = "medium", max_tokens: int = 16000) -> dict[str, Any]:
-    content: list[dict[str, Any]] = []
-    if image_jpeg is not None:
-        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                    "data": base64.b64encode(image_jpeg).decode()}})
+                    schema: dict[str, Any], more_images: Sequence[bytes] = (), reasoning_effort: str = "medium",
+                    max_tokens: int = 16000) -> dict[str, Any]:
+    content: list[dict[str, Any]] = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}}
+        for jpeg in ([image_jpeg] if image_jpeg is not None else []) + list(more_images)]
     content.append({"type": "text", "text": user_text})
     params = {"messages": [{"role": "user", "content": content}], "max_tokens": max(max_tokens, 32000)}
     try:
