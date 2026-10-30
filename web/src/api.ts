@@ -31,10 +31,11 @@ async function stream(path: string, body: unknown, onEvent: (e: AgentEvent) => v
 
 export const api = {
   health: () => call<{ ok: boolean; model: string; has_key: boolean; sam3d: boolean }>('/api/health'),
-  createSession: (image: Blob, prompt: string) => {
+  createSession: (image: Blob, prompt: string, side: Blob | null = null) => {
     const form = new FormData()
     form.append('image', image, 'photo.jpg')
     form.append('prompt', prompt)
+    if (side) form.append('side', side, 'side.jpg')
     return call<Pick<Session, 'id' | 'image_url' | 'size' | 'prompt'>>('/api/sessions', { method: 'POST', body: form })
   },
   session: (id: string) => call<Session>(`/api/sessions/${id}`),

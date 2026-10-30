@@ -74,10 +74,11 @@ export interface Anatomy {
 }
 
 export interface Reference {
-  origin: 'commons' | 'web'
+  origin: 'commons' | 'web' | 'user'
   view: string
   title: string
-  page_url: string
+  /** Where the photo came from; null for the user's own photo. */
+  page_url: string | null
   note: string
   image_url?: string
   license?: string

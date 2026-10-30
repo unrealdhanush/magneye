@@ -1,25 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
 import { CameraCapture } from './CameraCapture'
-import { IconArrow, IconCamera, IconPhoto } from './icons'
+import { IconArrow, IconCamera, IconPhoto, IconX } from './icons'
 
 const EXAMPLES = ['How does this work?', 'Why does it drift when I don’t touch it?', 'What happens when I press the trigger?', 'How do I get to the battery?']
 
-export function StartScreen({ busy, error, onStart }: { busy: boolean; error: string | null; onStart: (photo: Blob, prompt: string) => void }) {
-  const [photo, setPhoto] = useState<Blob | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
-  const [prompt, setPrompt] = useState('')
-  const [camera, setCamera] = useState(false)
-  const [dragging, setDragging] = useState(false)
-  const file = useRef<HTMLInputElement>(null)
-
+/** An object URL for a blob, revoked when the blob changes or the component unmounts. */
+function usePreview(blob: Blob | null) {
+  const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
-    if (!photo) { setPreview(null); return }
-    const url = URL.createObjectURL(photo)
-    setPreview(url)
-    return () => URL.revokeObjectURL(url)
-  }, [photo])
+    if (!blob) { setUrl(null); return }
+    const u = URL.createObjectURL(blob)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [blob])
+  return url
+}
 
-  const take = (b: Blob | undefined | null) => { if (b && b.type.startsWith('image/')) { setPhoto(b); setCamera(false) } }
+export function StartScreen({ busy, error, onStart }: {
+  busy: boolean; error: string | null; onStart: (photo: Blob, prompt: string, side: Blob | null) => void
+}) {
+  const [photo, setPhoto] = useState<Blob | null>(null)
+  const [side, setSide] = useState<Blob | null>(null)
+  const preview = usePreview(photo), sidePreview = usePreview(side)
+  const [prompt, setPrompt] = useState('')
+  // Which photo the live camera is taking, if it is open.
+  const [camera, setCamera] = useState<'front' | 'side' | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const file = useRef<HTMLInputElement>(null), sideFile = useRef<HTMLInputElement>(null)
+
+  const isImage = (b: Blob | undefined | null): b is Blob => !!b && b.type.startsWith('image/')
+  const take = (b: Blob | undefined | null) => { if (isImage(b)) { setPhoto(b); setCamera(null) } }
+  const takeSide = (b: Blob | undefined | null) => { if (isImage(b)) { setSide(b); setCamera(null) } }
 
   return (
     <section aria-labelledby="start-title" className="grid gap-4 py-6 lg:grid-cols-2 lg:items-center lg:gap-8">
@@ -41,9 +52,9 @@ export function StartScreen({ busy, error, onStart }: { busy: boolean; error: st
         </ol>
       </div>
 
-      <form className="glass edge space-y-2 rounded-xl p-3" onSubmit={e => { e.preventDefault(); if (photo) onStart(photo, prompt) }}>
+      <form className="glass edge space-y-2 rounded-xl p-3" onSubmit={e => { e.preventDefault(); if (photo) onStart(photo, prompt, side) }}>
         {camera ? (
-          <CameraCapture onCapture={take} onClose={() => setCamera(false)} />
+          <CameraCapture onCapture={camera === 'side' ? takeSide : take} onClose={() => setCamera(null)} />
         ) : (
           <div
             onDragOver={e => { e.preventDefault(); setDragging(true) }}
@@ -70,10 +81,34 @@ export function StartScreen({ busy, error, onStart }: { busy: boolean; error: st
               className="press inline-flex min-h-tap items-center gap-1 rounded-sm bg-card px-2 py-1.5 text-body text-ink shadow-ring hover:shadow-ring-hover">
               <IconPhoto className="h-3 w-3" /> {photo ? 'Change photo' : 'Choose photo'}
             </button>
-            <button type="button" onClick={() => setCamera(true)}
+            <button type="button" onClick={() => setCamera('front')}
               className="press inline-flex min-h-tap items-center gap-1 rounded-sm bg-card px-2 py-1.5 text-body text-ink shadow-ring hover:shadow-ring-hover">
               <IconCamera className="h-3 w-3" /> Use camera
             </button>
+          </div>
+        )}
+
+        {!camera && (
+          <div className="flex items-center gap-1.5 rounded-md bg-card p-1 shadow-ring">
+            {sidePreview
+              ? <img src={sidePreview} alt="Your side photo" className="img-outline h-6 w-8 shrink-0 rounded-sm object-cover" />
+              : <span className="grid h-6 w-8 shrink-0 place-items-center rounded-sm bg-ink/5 text-muted"><IconPhoto className="h-3 w-3" /></span>}
+            <div className="min-w-0 flex-1">
+              <p className="text-callout text-ink">Side photo <span className="text-muted">· optional</span></p>
+              <p className="text-footnote text-muted">From the left or right, it gives the 3D model its true depth.</p>
+            </div>
+            {side ? (
+              <button type="button" onClick={() => setSide(null)} aria-label="Remove side photo" title="Remove side photo"
+                className="press grid h-6 w-6 shrink-0 place-items-center rounded-sm text-ink hover:bg-ink/5"><IconX className="h-3 w-3" /></button>
+            ) : (
+              <>
+                <button type="button" onClick={() => sideFile.current?.click()} aria-label="Choose side photo" title="Choose side photo"
+                  className="press grid h-6 w-6 shrink-0 place-items-center rounded-sm text-ink hover:bg-ink/5"><IconPhoto className="h-3 w-3" /></button>
+                <button type="button" onClick={() => setCamera('side')} aria-label="Take side photo" title="Take side photo"
+                  className="press grid h-6 w-6 shrink-0 place-items-center rounded-sm text-ink hover:bg-ink/5"><IconCamera className="h-3 w-3" /></button>
+              </>
+            )}
+            <input ref={sideFile} type="file" accept="image/*" className="sr-only" tabIndex={-1} onChange={e => takeSide(e.target.files?.[0])} />
           </div>
         )}
 

@@ -247,3 +247,19 @@ def test_side_profile_maps_outline_rows_to_depth(monkeypatch):
     assert prof["rows"][0] == [0.0, 0.5] and prof["rows"][-1] == [-0.5, 0.5] and len(prof["rows"]) == 48
     mirrored = asyncio.run(views.side_profile({**view, "view": "left"}, "controller"))
     assert mirrored["rows"][0] == [-0.5, 0.0]
+
+
+def test_users_second_photo_is_vetted_first_and_wins(monkeypatch):
+    seen = {}
+
+    async def fake_vet(*, more_images, **_):
+        seen["n"] = len(more_images)
+        return {"candidates": [{"index": 1, "same_shape": True, "view": "left", "clean": True, "upright": True, "note": "grip side"}]}
+
+    monkeypatch.setattr(meta, "chat_json", fake_vet)
+    # No product name and no cited pages (research failed): the user's own photo is still vetted, with no web lookups.
+    found = asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", side=_photo()))
+    assert seen["n"] == 1 and found["considered"] == 1
+    view = found["views"][0]
+    assert view["origin"] == "user" and views.profile_view(found["views"]) is view
+    assert views.cite(view) == {"origin": "user", "view": "left", "title": "Your second photo", "page_url": None, "note": "grip side"}

@@ -165,20 +165,24 @@ function Provenance({ anatomy }: { anatomy: Anatomy }) {
         <div className="space-y-0.5">
           <p className="text-footnote text-muted">Also built from {refs.length === 1 ? 'this view' : 'these views'}</p>
           <ul className="flex flex-wrap gap-1">
-            {refs.map(r => (
-              <li key={r.page_url}>
-                <a href={r.page_url} target="_blank" rel="noopener noreferrer"
-                  title={[r.title, r.note, r.license && `${r.license}${r.author ? ` · ${r.author}` : ''}`].filter(Boolean).join('\n')}
-                  className="block w-10 text-caption2 text-muted hover:text-ink">
-                  {r.image_url
-                    ? <img src={r.image_url} alt={`${r.view.replace('_', ' ')} view: ${r.title}`} loading="lazy"
-                        className="h-8 w-10 rounded-sm bg-card object-cover shadow-ring" />
-                    : <span className="grid h-8 w-10 place-items-center rounded-sm bg-card px-0.5 shadow-ring">{hostOf(r.page_url)}</span>}
-                  <span className="mt-px block truncate capitalize text-ink">{r.view.replace('_', ' ')}</span>
-                  <span className="block truncate">{r.license ?? 'Web photo'}</span>
-                </a>
-              </li>
-            ))}
+            {refs.map(r => {
+              const body = <>
+                {r.image_url
+                  ? <img src={r.image_url} alt={`${r.view.replace('_', ' ')} view: ${r.title}`} loading="lazy"
+                      className="h-8 w-10 rounded-sm bg-card object-cover shadow-ring" />
+                  : <span className="grid h-8 w-10 place-items-center rounded-sm bg-card px-0.5 shadow-ring">{r.page_url ? hostOf(r.page_url) : 'Photo'}</span>}
+                <span className="mt-px block truncate capitalize text-ink">{r.view.replace('_', ' ')}</span>
+                <span className="block truncate">{r.origin === 'user' ? 'Your photo' : r.license ?? 'Web photo'}</span>
+              </>
+              const tip = [r.title, r.note, r.license && `${r.license}${r.author ? ` · ${r.author}` : ''}`].filter(Boolean).join('\n')
+              return (
+                <li key={r.page_url ?? r.view}>
+                  {r.page_url
+                    ? <a href={r.page_url} target="_blank" rel="noopener noreferrer" title={tip} className="block w-10 text-caption2 text-muted hover:text-ink">{body}</a>
+                    : <div title={tip} className="w-10 text-caption2 text-muted">{body}</div>}
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

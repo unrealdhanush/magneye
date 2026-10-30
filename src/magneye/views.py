@@ -171,23 +171,28 @@ async def candidates(query: str | None, sources: list[dict[str, str]]) -> list[d
 
 
 def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Up to MAX_VIEWS distinct useful views with the same body shape; clean shots and Commons photos win ties."""
-    best: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    """Up to MAX_VIEWS distinct useful views with the same body shape; the user's own photo comes first, then clean
+    shots, and Commons photos win ties."""
+    best: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
     for v in verdicts:
         i = v.get("index", 0) - 1
         if not (0 <= i < len(cands)) or not v.get("same_shape") or v.get("view") not in USEFUL:
             continue
-        rank = (int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
+        rank = (int(cands[i]["origin"] == "user"), int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
         if v["view"] not in best or rank > best[v["view"]][0]:
             best[v["view"]] = (rank, {**cands[i], "view": v["view"], "note": v.get("note", ""),
                                       "clean": bool(v.get("clean")), "upright": bool(v.get("upright"))})
-    ordered = sorted(best.values(), key=lambda rv: (-rv[0][0], USEFUL.index(rv[1]["view"])))
+    ordered = sorted(best.values(), key=lambda rv: (-rv[0][0], -rv[0][1], USEFUL.index(rv[1]["view"])))
     return [c for _, c in ordered[:MAX_VIEWS]]
 
 
-async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str) -> dict[str, Any]:
-    """Vetted reference views: {"views": [...with jpeg...], "considered": n}."""
-    cands = await candidates(query, sources)
+async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str,
+               side: bytes | None = None) -> dict[str, Any]:
+    """Vetted reference views: {"views": [...with jpeg...], "considered": n}. A second photo the user took
+    (`side`) is vetted first and wins over any photo found online."""
+    found = await candidates(query, sources) if query or sources else []
+    own = _normalize(side) if side else None
+    cands = ([{"origin": "user", "title": "Your second photo", "page_url": None, "image_url": None, "jpeg": own}] if own else []) + found
     if not cands:
         return {"views": [], "considered": 0}
     verdict = await meta.chat_json(
@@ -243,6 +248,7 @@ async def side_profile(view: dict[str, Any], phrase: str) -> dict[str, Any] | No
 
 
 def cite(view: dict[str, Any]) -> dict[str, Any]:
-    """What the anatomy keeps for the UI: Commons photos can be shown with their licence; web photos are only linked."""
+    """What the anatomy keeps for the UI: Commons photos can be shown with their licence; web photos are only linked;
+    the user's own photo is served from their session."""
     keep = ["origin", "view", "title", "page_url", "note"] + (["image_url", "license", "author"] if view["origin"] == "commons" else [])
     return {k: view.get(k) for k in keep}

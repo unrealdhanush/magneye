@@ -83,19 +83,34 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/api/sessions")
-async def create_session(image: UploadFile = File(...), prompt: str = Form("")) -> dict[str, Any]:
+async def create_session(image: UploadFile = File(...), prompt: str = Form(""),
+                         side: UploadFile | None = File(None)) -> dict[str, Any]:
+    """A new session from the user's photo (the front view), an optional second photo from another side, and a prompt."""
     jpeg, size = _normalize_image(await image.read())
+    side_jpeg = _normalize_image(await side.read())[0] if side else None
     sid = uuid.uuid4().hex[:16]
     d = DATA / "sessions" / sid
     d.mkdir(parents=True)
     (d / "image.jpg").write_bytes(jpeg)
-    _write_json(d / "session.json", {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest()})
+    session = {"prompt": prompt, "size": size, "image_sha": hashlib.sha256(jpeg).hexdigest()}
+    if side_jpeg:
+        (d / "side.jpg").write_bytes(side_jpeg)
+        session["side_sha"] = hashlib.sha256(side_jpeg).hexdigest()
+    _write_json(d / "session.json", session)
     return {"id": sid, "image_url": f"/api/sessions/{sid}/image.jpg", "size": size, "prompt": prompt}
 
 
 @app.get("/api/sessions/{sid}/image.jpg")
 def session_image(sid: str) -> FileResponse:
     return FileResponse(_session_dir(sid) / "image.jpg", media_type="image/jpeg")
+
+
+@app.get("/api/sessions/{sid}/side.jpg")
+def session_side_image(sid: str) -> FileResponse:
+    path = _session_dir(sid) / "side.jpg"
+    if not path.exists():
+        raise HTTPException(404, "no second photo")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @app.get("/api/sessions/{sid}")
@@ -146,12 +161,13 @@ async def build_session(sid: str) -> StreamingResponse:
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
     image = (d / "image.jpg").read_bytes()
+    side = (d / "side.jpg").read_bytes() if (d / "side.jpg").exists() else None
 
     async def work(emit: Emit) -> None:
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
-        # Same photo + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).
-        key = f"{s['image_sha'][:24]}-{hashlib.sha256(s['prompt'].encode()).hexdigest()[:12]}.json"
+        # Same photos + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).
+        key = f"{s['image_sha'][:24]}-{hashlib.sha256((s['prompt'] + s.get('side_sha', '')).encode()).hexdigest()[:12]}.json"
         cached = DATA / "cache" / key
         if anatomy is None:
             if cached.exists():
@@ -159,7 +175,12 @@ async def build_session(sid: str) -> StreamingResponse:
                 await emit({"type": "step", "agent": "builder", "tool": "cache", "status": "done",
                             "text": "Reused the verified anatomy for this photo and prompt"})
             else:
-                anatomy = await build(image=image, prompt=s["prompt"], emit=emit, model=MODEL, reasoning=REASONING, cache=cache)
+                anatomy = await build(image=image, prompt=s["prompt"], emit=emit, model=MODEL, reasoning=REASONING,
+                                      cache=cache, side=side)
+            # The user's own second photo is served from this session (a cached anatomy may come from another).
+            for ref in anatomy.get("references", []):
+                if ref["origin"] == "user":
+                    ref["image_url"] = f"/api/sessions/{sid}/side.jpg"
             _write_json(d / "anatomy.json", anatomy)
         g = _read_json(d / "ground.json")
         if g is None:

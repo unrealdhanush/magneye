@@ -55,19 +55,21 @@ async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dic
     return found if found["text"] else None
 
 
-async def _views(*, image: bytes, query: str | None, sources: list[dict[str, str]], emit: Emit, model: str) -> list[dict[str, Any]]:
-    """Vetted photos of the same product from other angles; [] when none turn up."""
-    if not query and not sources:
+async def _views(*, image: bytes, side: bytes | None, query: str | None, sources: list[dict[str, str]], emit: Emit,
+                 model: str) -> list[dict[str, Any]]:
+    """Vetted photos of the same product from other angles, the user's own second photo first; [] when none turn up."""
+    if not query and not sources and not side:
         return []
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "running"})
     try:
-        found = await views.find(image=image, query=query, sources=sources, model=model)
+        found = await views.find(image=image, query=query, sources=sources, model=model, side=side)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
                     "text": f"Reference photos unavailable ({e}); building from the one photo"})
         return []
     picked = found["views"]
-    where = list(dict.fromkeys("Wikimedia Commons" if v["origin"] == "commons" else _host(v["page_url"]) for v in picked))
+    where = list(dict.fromkeys({"commons": "Wikimedia Commons", "user": "your photo"}.get(v["origin"]) or _host(v["page_url"])
+                               for v in picked))
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "done",
                 "text": f"{_count(len(picked), 'reference view', 'reference views')} of {found['considered']} photos checked: "
                         f"{', '.join(v['view'].replace('_', ' ') for v in picked)} ({', '.join(where)})" if picked
@@ -85,12 +87,14 @@ def _host(url: str) -> str:
 
 async def build(
     *, image: bytes, prompt: str, emit: Emit, model: str, reasoning: str, cache: SegmentCache, max_turns: int = 6,
+    side: bytes | None = None,
 ) -> dict[str, Any]:
     research = await _research(image=image, prompt=prompt, emit=emit, model=model)
     query = None
     if research:
         research["text"], query = A.photo_query(research["text"])
-    picked = await _views(image=image, query=query, sources=research["sources"] if research else [], emit=emit, model=model)
+    picked = await _views(image=image, side=side, query=query, sources=research["sources"] if research else [],
+                          emit=emit, model=model)
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
         model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"], picked),

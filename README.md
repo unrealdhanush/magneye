@@ -1,6 +1,6 @@
 # Magneye
 
-See inside anything you can photograph. Give Magneye one photo and a short prompt. Meta's models work out what the object is, what's inside it and how it works. The result is an interactive 3D exploded view: you can play how the object works, or describe a fault and watch the likely culprit light up red.
+See inside anything you can photograph. Give Magneye one photo (plus, optionally, a second one from the side) and a short prompt. Meta's models work out what the object is, what's inside it and how it works. The result is an interactive 3D exploded view: you can play how the object works, or describe a fault and watch the likely culprit light up red.
 
 Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026).
 
@@ -10,12 +10,14 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 
 **Builder agent:** turns the photo into a verified anatomy.
 
-1. Drafts the anatomy as JSON: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes.
-2. Verifies the draft with its tools:
+1. Researches the object with Muse Wonder's web search: identifies the exact product, then looks for teardowns, specs and common failures (at most 6 searches) and writes a cited blueprint brief. Only URLs the search actually returned are kept as sources.
+2. Finds other angles of the same product: photos on Wikimedia Commons (shown with licence and author) and on the pages the research cited (used as model input and linked, not shown). A second photo the user took comes first. Muse Wonder vets each one (same body shape? which side?) and keeps up to three.
+3. Drafts the anatomy as JSON from the photo, the brief and those views: the object, 12–28 parts with sizes and positions in millimetres, connections, how-it-works scenarios and failure modes. Each part is marked seen, documented (by a cited source) or inferred. Straps, bracelets and cables are accessories: the viewer frames the main body and moves them aside.
+4. Verifies the draft with its tools:
    - `find_in_photo` runs **SAM 3.1** on a noun phrase. It confirms each part the draft calls visible, reports where the part really is in the object's millimetre frame, and catches parts the draft imagined.
    - `check_geometry` flags parts outside the object, internal parts that share the same space, and removal orders that dig outward.
    - `view_layout` draws the agent's own layout over the photo so it can see what's off.
-3. Fixes problems with `update_part`, `add_part` and `remove_part`, then calls `finish`. A final SAM 3.1 pass grounds the visible parts. The object mask becomes the 3D shell, extruded with the photo projected onto it.
+5. Fixes problems with `move_parts` (shift the whole body at once), `update_parts`, `add_part` and `remove_part`, then calls `finish`. A final SAM 3.1 pass grounds the visible parts. The object mask becomes the 3D shell, extruded with the photo projected onto it. When a clean, upright side view is available, SAM 3.1 traces its outline (while verification runs) and the shell is bent to that side profile instead of a straight slab.
 
 **Guide agent:** answers prompts by driving the 3D viewer.
 
@@ -26,11 +28,12 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 | Model | Used for |
 |---|---|
 | **Muse Wonder** | Both agents |
-| **SAM 3.1** | Builder verification, grounding, the guide's close-ups |
+| **Muse Wonder + web search** | The builder's research and its vetting of reference photos |
+| **SAM 3.1** | Builder verification, grounding, side profiles, the guide's close-ups |
 | **SAM 3D Objects** (open weights, on Modal) | Optional 3D mesh that replaces the extruded silhouette |
 | **Muse Voice Transcribe** | Push-to-talk questions |
 
-The viewer (React + three.js) shows scenarios as a chain of parts with a signal pulse running between them. For failures, it lifts off the parts in the way, outermost first, then pulses the culprit red. Hidden parts are inferred, not measured. Each part is marked either "seen in photo · SAM 3.1" or "hidden · inferred".
+The viewer (React + three.js) shows scenarios as a chain of parts with a signal pulse running between them. For failures, it lifts off the parts in the way, outermost first, then pulses the culprit red. Hidden parts are inferred or documented, not measured. Each part is marked "seen in photo · SAM 3.1", "documented · cited sources" or "hidden · inferred", and the object card lists the blueprint sources and the reference views.
 
 ## Run it
 
