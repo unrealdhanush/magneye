@@ -99,3 +99,62 @@ a { @apply text-accent-text underline underline-offset-2 hover:decoration-2; }
 @media (prefers-reduced-transparency: reduce) { .glass { background: rgb(var(--card)); backdrop-filter: none; -webkit-backdrop-filter: none; } }
 @media (prefers-contrast: more) { .glass { background: rgb(var(--card)); border-color: rgb(var(--muted)); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Reality / Blueprint spaces: the 3D layer softens away while the blueprint sweeps out from the centre. */
+.space-layer { transition: opacity 0.45s cubic-bezier(0.23, 1, 0.32, 1), transform 0.6s cubic-bezier(0.23, 1, 0.32, 1), filter 0.45s cubic-bezier(0.23, 1, 0.32, 1); }
+.space-layer.is-away { opacity: 0; transform: scale(0.94); filter: blur(8px); pointer-events: none; }
+.blueprint-layer { clip-path: circle(0% at 50% 50%); transition: clip-path 0.7s cubic-bezier(0.77, 0, 0.175, 1); pointer-events: none; }
+.blueprint-layer.is-active { clip-path: circle(75% at 50% 50%); pointer-events: auto; }
+
+/* Blueprint sheet: cyanotype paper, the same in light and dark (it is a drawing, not chrome). */
+.blueprint {
+  --bp-paper: #153e78; --bp-ink: #e6f0ff; --bp-faint: rgb(230 240 255 / 0.55); --bp-pick: #ffd60a;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.bp-paper { fill: var(--bp-paper); }
+.bp-gridline { fill: none; stroke: rgb(230 240 255 / 0.06); stroke-width: 1; }
+.bp-gridline-major { fill: none; stroke: rgb(230 240 255 / 0.12); stroke-width: 1; }
+.bp-frame { fill: none; stroke: var(--bp-ink); stroke-width: 2; }
+.bp-line { fill: none; stroke: var(--bp-ink); stroke-width: 1.6; stroke-linejoin: round; transition: stroke 0.15s, stroke-width 0.15s; }
+.bp-part.is-hidden .bp-line { stroke-dasharray: 6 4; stroke-width: 1.1; stroke-opacity: 0.75; }
+.bp-part.is-hovered .bp-line { stroke: #ffffff; stroke-width: 2.2; stroke-opacity: 1; }
+.bp-part.is-selected .bp-line { stroke: var(--bp-pick); stroke-width: 2.6; stroke-opacity: 1; }
+.bp-hit { fill: transparent; cursor: pointer; }
+.bp-center { fill: none; stroke: var(--bp-faint); stroke-width: 0.8; stroke-dasharray: 14 3 2 3; }
+.bp-leader { stroke: var(--bp-faint); stroke-width: 0.8; }
+.bp-dot { fill: var(--bp-ink); }
+.bp-balloon { cursor: pointer; }
+.bp-balloon-ring { fill: var(--bp-paper); stroke: var(--bp-ink); stroke-width: 1.2; }
+.bp-balloon-text { fill: var(--bp-ink); text-anchor: middle; dominant-baseline: central; font-weight: 600; }
+.bp-balloon.is-hovered .bp-balloon-ring, .bp-balloon.is-hovered .bp-leader { stroke: #ffffff; stroke-width: 1.8; }
+.bp-balloon.is-selected .bp-balloon-ring, .bp-balloon.is-selected .bp-leader { stroke: var(--bp-pick); stroke-width: 2; }
+.bp-balloon.is-selected .bp-balloon-text { fill: var(--bp-pick); }
+.bp-label { fill: var(--bp-ink); font-size: 13px; letter-spacing: 0.14em; font-weight: 600; }
+.bp-th { fill: var(--bp-faint); font-size: 11px; letter-spacing: 0.1em; }
+.bp-td { fill: var(--bp-ink); font-size: 13px; }
+.bp-td.is-small { font-size: 11px; }
+.bp-num { font-variant-numeric: tabular-nums; }
+.bp-title { fill: var(--bp-ink); font-size: 20px; font-weight: 700; }
+.bp-rule { stroke: var(--bp-faint); stroke-width: 1; }
+.bp-titleblock { fill: rgb(230 240 255 / 0.04); stroke: var(--bp-ink); stroke-width: 1.4; }
+.bp-row { cursor: pointer; }
+.bp-row-bg { fill: transparent; }
+.bp-row.is-hovered .bp-row-bg { fill: rgb(255 255 255 / 0.08); }
+.bp-row.is-selected .bp-row-bg { fill: rgb(255 214 10 / 0.16); }
+.bp-row.is-selected .bp-td { fill: var(--bp-pick); }
+.bp-dim { stroke: var(--bp-ink); stroke-width: 1; }
+.bp-ext { stroke: var(--bp-faint); stroke-width: 0.8; }
+.bp-arrowhead { fill: var(--bp-ink); }
+.bp-dimtext { fill: var(--bp-ink); font-size: 14px; text-anchor: middle; font-variant-numeric: tabular-nums; }
+/* The sheet draws itself: outlines trace in, everything else fades up, each after its own delay. */
+.bp-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: bp-draw 1.1s cubic-bezier(0.23, 1, 0.32, 1) var(--d, 0s) forwards; }
+.bp-fade { opacity: 0; animation: bp-fade 0.6s ease-out var(--d, 0s) forwards; }
+@keyframes bp-draw { to { stroke-dashoffset: 0; } }
+@keyframes bp-fade { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .bp-draw { stroke-dasharray: none; stroke-dashoffset: 0; }
+  .bp-fade { opacity: 1; }
+  .space-layer.is-away { transform: none; filter: none; }
+  .blueprint-layer { clip-path: none; opacity: 0; }
+  .blueprint-layer.is-active { opacity: 1; }
+}

@@ -25,6 +25,8 @@ export interface ViewerProps {
   onSelect: (id: string | null) => void
   /** When Assemble was pressed: parts fly home one by one, innermost first, and the shell closes last. */
   assembleAt: number | null
+  /** Stop rendering while another space covers the view. */
+  paused?: boolean
 }
 
 /** Per-part delay between arrivals during assembly; capped so the whole build-up stays around a second. */
@@ -43,7 +45,7 @@ export function Viewer(props: ViewerProps) {
   const [high, setHigh] = useState(true)
   return (
     // flat: no tone mapping in the renderer, since the effects chain applies it once at the end.
-    <Canvas flat camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={high ? [1, 2] : 1} gl={{ antialias: false, alpha: true }}
+    <Canvas flat frameloop={props.paused ? 'never' : 'always'} camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={high ? [1, 2] : 1} gl={{ antialias: false, alpha: true }}
       onCreated={({ gl }) => { gl.localClippingEnabled = true }} onPointerMissed={() => props.onSelect(null)}>
       <PerformanceMonitor onIncline={() => setHigh(true)} onDecline={() => setHigh(false)} flipflops={3} onFallback={() => setHigh(false)} />
       <Effects high={high} />

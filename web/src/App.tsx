@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { ThemeToggle } from './theme'
 import type { Agent, AgentEvent, Anatomy, Failure, Ground, Playback, Scenario, Session, ViewerAction } from './types'
+import { FittedBlueprint } from './blueprint/Blueprint'
+import { SpaceTabs, type Space } from './blueprint/SpaceTabs'
 import { StartScreen } from './ui/StartScreen'
 import { IconLayers, IconReset, IconXray } from './ui/icons'
 import {
@@ -66,6 +68,20 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const [ground, setGround] = useState<Ground | null>(null)
   const [meshUrl, setMeshUrl] = useState<string | null>(null)
   const [steps, setSteps] = useState<TraceStep[]>([])
+  // Reality (3D) or Blueprint. The 3D view stops rendering once the blueprint has covered it, and resumes on return.
+  const [space, setSpace] = useState<Space>('reality')
+  const [visits, setVisits] = useState(0)
+  const [paused, setPaused] = useState(false)
+  const switchSpace = useCallback((next: Space) => {
+    setSpace(next)
+    if (next === 'blueprint') setVisits(v => v + 1)
+    else setPaused(false)
+  }, [])
+  useEffect(() => {
+    if (space !== 'blueprint') return
+    const id = setTimeout(() => setPaused(true), 800)
+    return () => clearTimeout(id)
+  }, [space])
   const [turns, setTurns] = useState<Turn[]>([])
   const [thinking, setThinking] = useState<Agent | null>(null)
   const [playback, setPlayback] = useState<Playback>({ kind: 'idle' })
@@ -178,7 +194,10 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         )}
       </aside>
 
-      <section className="stage relative order-1 h-[60vh] min-w-0 min-h-[416px] overflow-hidden rounded-xl shadow-ring md:col-span-2 xl:order-2 xl:col-span-1 xl:h-[calc(100vh-112px)]" aria-label="3D exploded view">
+      <section className="stage relative order-1 h-[60vh] min-w-0 min-h-[416px] overflow-hidden rounded-xl shadow-ring md:col-span-2 xl:order-2 xl:col-span-1 xl:h-[calc(100vh-112px)]"
+        aria-label={space === 'reality' ? '3D exploded view' : 'Blueprint'}>
+        <div id="space-reality" role="tabpanel" aria-labelledby="tab-reality" aria-hidden={space !== 'reality'}
+          className={`space-layer absolute inset-0 ${space === 'reality' ? '' : 'is-away'}`}>
         <div className="stage-grid absolute inset-0" aria-hidden="true" />
         <span className="hud-corner left-2 top-2 border-l-2 border-t-2" aria-hidden="true" />
         <span className="hud-corner right-2 top-2 border-r-2 border-t-2" aria-hidden="true" />
@@ -186,7 +205,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         <span className="hud-corner bottom-2 right-2 border-b-2 border-r-2" aria-hidden="true" />
         {anatomy ? (
           <Viewer anatomy={anatomy} ground={ground} imageUrl={session.image_url} meshUrl={meshUrl} explode={explode} xray={xray}
-            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} />
+            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} paused={paused} />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <img src={session.image_url} alt="" className="max-h-[60%] max-w-[60%] rounded-md opacity-60" />
@@ -207,6 +226,19 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
               className="press inline-flex min-h-tap items-center gap-1 rounded-sm px-1.5 text-subheadline text-ink hover:bg-ink/5">
               <IconReset className="h-2.5 w-2.5" /> Assemble
             </button>
+          </div>
+        )}
+        </div>
+        {anatomy && (
+          <div id="space-blueprint" role="tabpanel" aria-labelledby="tab-blueprint" aria-hidden={space !== 'blueprint'}
+            className={`blueprint-layer absolute inset-0 bg-[#153e78] p-1 pt-8 ${space === 'blueprint' ? 'is-active' : ''}`}>
+            {/* Keyed by visit, so the sheet draws itself again each time the space opens. */}
+            {visits > 0 && <FittedBlueprint key={visits} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} sessionId={sid} />}
+          </div>
+        )}
+        {anatomy && (
+          <div className="absolute left-1/2 top-2 z-10 -translate-x-1/2">
+            <SpaceTabs space={space} onChange={switchSpace} />
           </div>
         )}
       </section>
