@@ -27,6 +27,8 @@ export interface ViewerProps {
   assembleAt: number | null
   /** Stop rendering while another space covers the view. */
   paused?: boolean
+  /** Real meshes for modeled parts, unit-sized (fitted to each part's size here). */
+  models?: Map<string, THREE.BufferGeometry>
 }
 
 /** Per-part delay between arrivals during assembly; capped so the whole build-up stays around a second. */
@@ -219,8 +221,13 @@ interface Piece { geometry: THREE.BufferGeometry; scale: Vec3; axis: THREE.Euler
  * How a part is drawn, best source first: its own SAM 3.1 outline extruded with the photo on its face
  * (visible parts), then the model's multi-primitive description, then its single primitive.
  */
-function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | null, texture: THREE.Texture) {
+function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | null, texture: THREE.Texture, mesh?: THREE.BufferGeometry) {
   return useMemo(() => {
+    // A modeled part: its real mesh, already in the object's axes, stretched to the part's size.
+    if (mesh) {
+      const m = surface(part.material)
+      return { fixed: true, pieces: [{ geometry: mesh, scale: part.size_mm.map(v => v * s) as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: m }], materials: [m] }
+    }
     const match = part.grounded ? ground?.parts[part.id] : undefined
     const home = new THREE.Vector3(...part.center_mm).multiplyScalar(s)
     if (match && ground) {
@@ -240,7 +247,7 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
           new THREE.MeshStandardMaterial({ color: tone.clone().multiplyScalar(0.5), roughness: 0.8, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
           new THREE.MeshStandardMaterial({ color: tone, roughness: 0.5, emissive: ACCENT, emissiveIntensity: 0, transparent: true }),
         ]
-        return { photo: true, pieces: [{ geometry: g, scale: [1, 1, 1] as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: mats }], materials: mats }
+        return { fixed: true, pieces: [{ geometry: g, scale: [1, 1, 1] as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: mats }], materials: mats }
       }
     }
     const comps = (part.components ?? []).filter(c => c.size_mm?.length === 3 && c.offset_mm?.length === 3)
@@ -255,8 +262,8 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
       return { geometry: sh.geometry, scale: sh.scale, axis: sh.axis, position: c.offset.map(v => v * s) as Vec3,
         rotation: c.rot.map(d => d * DEG) as Vec3, material: m }
     })
-    return { photo: false, pieces, materials }
-  }, [part, s, anatomy, ground, texture])
+    return { fixed: false, pieces, materials }
+  }, [part, s, anatomy, ground, texture, mesh])
 }
 
 /**
@@ -273,14 +280,14 @@ function useStaggeredExplode(explode: number, assembleAt: number | null, delay: 
   }
 }
 
-function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl, assembleAt, delay }:
+function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl, assembleAt, delay, models }:
   ViewerProps & { part: Part; s: number; maxLayer: number; registry: Registry; delay: number }) {
   const mover = useRef<THREE.Group>(null)
   const spinner = useRef<THREE.Group>(null)
   const [hovered, setHovered] = useState(false)
   const texture = useTexture(imageUrl)
   texture.colorSpace = THREE.SRGBColorSpace
-  const { photo, pieces, materials } = usePieces(part, s, anatomy, ground, texture)
+  const { fixed, pieces, materials } = usePieces(part, s, anatomy, ground, texture, models?.get(part.id))
   const home = useMemo(() => new THREE.Vector3(...part.center_mm).multiplyScalar(s), [part.center_mm, s])
   const dir = useMemo(() => explodeDirection(part, s, maxLayer, new THREE.Vector3(...bodyBox(anatomy).center).multiplyScalar(s)),
     [part, s, maxLayer, anatomy])
@@ -373,8 +380,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(part.id) }}
       onPointerOver={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
       onPointerOut={() => { setHovered(false); document.body.style.cursor = '' }}>
-      {/* Photo pieces are already in the photo's front-view orientation, so the model's rotation does not apply. */}
-      <group rotation={photo ? [0, 0, 0] : part.rotation_deg.map(d => d * DEG) as [number, number, number]}>
+      {/* Photo-cut and modeled pieces are already oriented in the object's frame, so the part's rotation does not apply. */}
+      <group rotation={fixed ? [0, 0, 0] : part.rotation_deg.map(d => d * DEG) as [number, number, number]}>
         <group ref={spinner}>
           {pieces.map((pc, i) => (
             <group key={i} position={pc.position} rotation={pc.rotation}>
@@ -404,10 +411,11 @@ function labelFor(part: Part, playback: Playback, selectedId: string | null, hov
 }
 
 /** Shell opacity: solid when assembled, thinning as the halves part, hidden while a scenario or failure plays. */
-function shellOpacity(explode: number, xray: boolean, playback: Playback) {
+/** How solid the photo shell is: it fades as the object opens, further when modeled parts carry the real shape. */
+function shellOpacity(explode: number, xray: boolean, playback: Playback, modeled = false) {
   if (playback.kind !== 'idle') return 0
   if (xray) return 0.14
-  return 1 - clamp01((explode - 0.2) / 0.5) * 0.65
+  return 1 - clamp01((explode - 0.2) / 0.5) * (modeled ? 0.9 : 0.65)
 }
 
 function useShellFade(materials: THREE.Material[], target: () => number) {
@@ -433,6 +441,7 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
   const texture = useTexture(imageUrl)
   texture.colorSpace = THREE.SRGBColorSpace
   const s = worldScale(anatomy)
+  const modeled = anatomy.parts.some(p => p.kind === 'exterior' && p.model)
   const depth = photoExtent(anatomy)[2] * s
   const toObject = useMemo(() => new THREE.Quaternion().setFromRotationMatrix(photoRotation(anatomy).transpose()), [anatomy])
   // The halves part along the object's own front-back axis, like opening the real thing, expressed in the shell's
@@ -473,7 +482,7 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
   const step = useStaggeredExplode(explode, assembleAt, delay)
   const current = useRef(explode)
   // Opacity follows the halves' actual position, so the shell stays open until it closes in the assembly.
-  useShellFade(materials, () => shellOpacity(current.current, xray, playback))
+  useShellFade(materials, () => shellOpacity(current.current, xray, playback, modeled))
   useFrame((_, dt) => {
     current.current = step(dt, performance.now()).value
     const gap = current.current * 1.8
@@ -493,6 +502,7 @@ function MeshShell({ url, anatomy, explode, xray, playback, assembleAt, delay }:
   { url: string; anatomy: Anatomy; explode: number; xray: boolean; playback: Playback; assembleAt: number | null; delay: number }) {
   const { scene } = useGLTF(url)
   const s = worldScale(anatomy)
+  const modeled = anatomy.parts.some(p => p.kind === 'exterior' && p.model)
   const { object, materials } = useMemo(() => {
     const root = scene.clone(true)
     // Fit SAM 3D's mesh to the object's estimated extent, centred on the origin.
@@ -518,7 +528,7 @@ function MeshShell({ url, anatomy, explode, xray, playback, assembleAt, delay }:
   const step = useStaggeredExplode(explode, assembleAt, delay)
   const current = useRef(explode)
   useFrame((_, dt) => { current.current = step(dt, performance.now()).value })
-  useShellFade(materials, () => shellOpacity(current.current, xray, playback))
+  useShellFade(materials, () => shellOpacity(current.current, xray, playback, modeled))
   return <primitive object={object} />
 }
 

@@ -35,6 +35,8 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   side_profile: { label: 'Trace the side profile', model: 'SAM 3.1', orb: 'shaping' },
   move_parts: { label: 'Move the body', model: 'Muse Wonder', orb: 'shaping' },
   place_in_photo: { label: 'Place parts as seen', model: 'Muse Wonder', orb: 'shaping' },
+  model_parts: { label: 'Model parts in 3D', model: 'Wonder · Manifold', orb: 'shaping' },
+  view_models: { label: 'Check models vs photo', model: 'Muse Wonder', orb: 'searching' },
   clean_photo: { label: 'Clear what covers it', model: 'SAM 3.1 · Muse Image', orb: 'shaping' },
   thought: { label: 'Thinking', model: 'Muse Wonder', orb: 'solving' },
   error: { label: 'Error', model: '', orb: 'working' },

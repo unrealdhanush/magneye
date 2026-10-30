@@ -12,6 +12,7 @@ import {
   AgentTrace, AskBar, Conversation, FailureList, ObjectCard, PartDetail, PhotoMasks, ScenarioList,
   type TraceStep, type Turn,
 } from './ui/panels'
+import { usePartModels } from './viewer/models'
 import { Viewer } from './viewer/Viewer'
 
 const sessionFromHash = () => location.hash.match(/^#\/s\/([a-z0-9]+)$/)?.[1] ?? null
@@ -97,6 +98,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   // Latest anatomy/ground as streamed, readable after an await without waiting for a re-render.
   const latest = useRef<{ anatomy: Anatomy | null; ground: Ground | null }>({ anatomy: null, ground: null })
   const editor = useAnatomyEditor(sid, latest, setAnatomy)
+  const models = usePartModels(sid, anatomy)
 
   const play = (s: Scenario) => { setPlayback({ kind: 'scenario', scenario: s, startedAt: performance.now() }); setFocusIds([]) }
   const show = (f: Failure) => { setPlayback({ kind: 'failure', failure: f, startedAt: performance.now() }); setFocusIds([]); setSelectedId(null) }
@@ -233,7 +235,8 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         <span className="hud-corner bottom-2 right-2 border-b-2 border-r-2" aria-hidden="true" />
         {anatomy ? (
           <Viewer anatomy={anatomy} ground={ground} imageUrl={session.image_url} meshUrl={meshUrl} explode={explode} xray={xray}
-            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} paused={paused} />
+            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} paused={paused}
+            models={models} />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <img src={session.image_url} alt="" className="max-h-[60%] max-w-[60%] rounded-md opacity-60" />

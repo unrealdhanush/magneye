@@ -78,7 +78,7 @@ export function Inspector({ part, onEdit, onDuplicate, onDelete, onClose }:
         </label>
         <label className={field}>
           <span className={caption}>Shape</span>
-          <select value={part.shape} onChange={e => onEdit(part.id, { shape: e.target.value as Shape, components: [] })}
+          <select value={part.shape} onChange={e => onEdit(part.id, { shape: e.target.value as Shape, components: [], model: null })}
             className="min-h-tap w-full rounded-sm bg-card px-px text-callout shadow-ring">{SHAPES.map(s => <option key={s} value={s}>{label(s)}</option>)}</select>
         </label>
       </div>

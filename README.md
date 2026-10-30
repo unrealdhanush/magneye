@@ -20,10 +20,13 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
    - `view_layout` draws the agent's own layout over the photo so it can see what's off.
 5. Fixes problems with `move_parts` (shift the whole body at once), `update_parts`, `add_part` and `remove_part`, then calls `finish`. A final SAM 3.1 pass grounds the visible parts. The object mask becomes the 3D shell, extruded with the photo projected onto it. When a clean, upright side view is available, SAM 3.1 traces its outline (while verification runs) and the shell is bent to that side profile instead of a straight slab.
 
+6. Models the parts in true 3D: a modeler pass (Muse Wonder with tools) writes a geometry recipe for each part that shapes the object (rounded shells, cavities, wells, ports, gears, springs, drivers) as a small tree of solid operations (box, cylinder, revolve, extrude, shell, difference, arrays...). **Manifold**, the open-source geometry kernel behind OpenSCAD, builds them; recipes are data, never code. The modeler renders its parts from the photo's viewpoint beside the photo and fixes what doesn't match.
+
 **Guide agent:** answers prompts by driving the 3D viewer.
 
 - `highlight`, `play_scenario` / `create_scenario`, `show_failure` / `create_failure` and `set_explode` control the viewer.
 - `look_closer` crops the photo around a part.
+- `edit_parts`, `add_part` and `remove_part` change the model when the user asks ("add a magnet under each earbud").
 - `ask_user` asks a single question when a symptom fits more than one fault. The question appears in the conversation with tap-to-answer options, and the conversation resumes on the user's reply.
 
 | Model | Used for |
@@ -35,7 +38,9 @@ Two agents, both Muse Wonder (`muse-wonder-1.0`) with tools, stream every step t
 | **SAM 3D Objects** (open weights, on Modal) | Optional 3D mesh that replaces the extruded silhouette |
 | **Muse Voice Transcribe** | Push-to-talk questions |
 
-The viewer (React + three.js) shows scenarios as a chain of parts with a signal pulse running between them. For failures, it lifts off the parts in the way, outermost first, then pulses the culprit red. Hidden parts are inferred or documented, not measured. Each part is marked "seen in photo · SAM 3.1", "documented · cited sources" or "hidden · inferred", and the object card lists the blueprint sources and the reference views.
+**Two spaces.** Reality is the 3D view; Blueprint is the same anatomy as an engineering sheet (front, top and right views with hidden parts dashed, dimensions, numbered balloons, a parts list and a title block). A tab switches between them with an animated transition. In the Blueprint, parts can be edited (fields, drag to move in any view, add, duplicate, delete, undo/redo) and the 3D view follows.
+
+The viewer (React + three.js, with ambient occlusion, neutral tone mapping and physical materials) shows scenarios as a chain of parts with a signal pulse running between them. For failures, it lifts off the parts in the way, outermost first, then pulses the culprit red. Hidden parts are inferred or documented, not measured. Each part is marked "seen in photo · SAM 3.1", "documented · cited sources" or "hidden · inferred", and the object card lists the blueprint sources and the reference views.
 
 ## Run it
 

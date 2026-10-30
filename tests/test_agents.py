@@ -7,7 +7,7 @@ import json
 
 from PIL import Image
 
-from magneye import builder, guide, meta, views
+from magneye import builder, guide, meta, modeler, views
 from magneye.checks import geometry_issues
 from magneye.ground import SegmentCache
 
@@ -100,6 +100,7 @@ def test_builder_verifies_and_edits(monkeypatch):
     monkeypatch.setattr(meta, "chat_json", fake_draft)
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
+    monkeypatch.setattr(modeler, "model", _no_modeling)
     events, emit = _collect()
     photo = _photo()
 
@@ -218,6 +219,7 @@ def test_builder_moves_the_body_in_one_call(monkeypatch):
     monkeypatch.setattr(meta, "chat_json", fake_draft)
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
+    monkeypatch.setattr(modeler, "model", _no_modeling)
     events, emit = _collect()
     photo = _photo()
     result = asyncio.run(builder.build(image=photo, prompt="", emit=emit, model="m", reasoning="low", cache=SegmentCache(photo)))
@@ -314,3 +316,31 @@ def test_guide_edits_the_model_when_asked(monkeypatch):
     # Removing the culprit of a failure drops that failure too.
     assert "pots" not in by_id and all(f["culprit_part_id"] != "pots" for f in anatomy["failures"])
     assert anatomy["revision"] == 3 and any(e["type"] == "anatomy" for e in events)
+
+
+async def _no_modeling(**_):
+    return 0
+
+
+def test_modeler_builds_checks_and_fixes(monkeypatch):
+    anatomy = copy.deepcopy(ANATOMY)
+    case = {"op": "shell", "of": {"op": "box", "size": [100, 200, 50], "radius": 8}, "wall": 3, "open": "+z"}
+    script = Script([
+        {"content": "", "tool_calls": [
+            _call("model_parts", {"models": [{"id": "shell", "recipe": case},
+                                             {"id": "stick", "recipe": {"op": "cylinder", "d": 10, "h": 8, "axis": "w"}}]}),
+            _call("view_models", {}, 1)]},
+        {"content": "", "tool_calls": [
+            _call("model_parts", {"models": [{"id": "stick", "recipe": {"op": "cylinder", "d": 10, "h": 8, "axis": "z"}}]}),
+            _call("finish", {"summary": "Modeled the shell and stick"}, 1)]},
+    ])
+    monkeypatch.setattr(meta, "chat", script)
+    events, emit = _collect()
+    n = asyncio.run(modeler.model(anatomy=anatomy, photo=_photo(), box=[100, 100, 300, 500], emit=emit, model_id="m"))
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    assert n == 2 and by_id["shell"]["model"] == case and by_id["stick"]["model"]["axis"] == "z"
+    # The broken recipe was reported back with a reason, and the render reached the model as an image.
+    first_report = json.loads(next(m["content"] for m in script.seen[1][0] if m.get("role") == "tool"))
+    assert any("axis must be" in r.get("error", "") for r in first_report)
+    assert script.seen[1][0][-1]["content"][0]["type"] == "image_url"
+    assert any(e.get("text") == "Built 1 part with Manifold; 1 to fix" for e in events)

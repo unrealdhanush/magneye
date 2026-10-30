@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from . import anatomy as A
 from . import guide, meta
+from . import model as model_kit
 from .agent import Emit
 from .builder import build
 from .clean import clear_hands
@@ -285,6 +286,27 @@ async def build_session(sid: str) -> StreamingResponse:
 
 class Ask(BaseModel):
     prompt: str
+
+
+@app.get("/api/sessions/{sid}/models")
+def session_models(sid: str) -> dict[str, Any]:
+    """Meshes of the parts that have geometry recipes, built by Manifold and cached until a recipe changes."""
+    d = _session_dir(sid)
+    anatomy = _read_json(d / "anatomy.json") or {"parts": []}
+    recipes = {p["id"]: p["model"] for p in anatomy["parts"] if p.get("model")}
+    key = hashlib.sha256(json.dumps(recipes, sort_keys=True).encode()).hexdigest()[:16]
+    cached = _read_json(d / "models.json")
+    if cached and cached.get("key") == key:
+        return cached
+    meshes: dict[str, Any] = {}
+    for pid, recipe in recipes.items():
+        try:
+            meshes[pid] = model_kit.encode(model_kit.build(recipe))
+        except model_kit.RecipeError:
+            continue  # an edited part whose recipe no longer builds is drawn as its primitive
+    out = {"key": key, "parts": meshes}
+    _write_json(d / "models.json", out)
+    return out
 
 
 REQUIRED_PART_KEYS = {"id", "name", "kind", "material", "shape", "size_mm", "center_mm", "rotation_deg", "layer"}

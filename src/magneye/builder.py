@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import meta, pose, views
+from . import meta, modeler, pose, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches
@@ -259,6 +259,12 @@ async def build(
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "verify", "status": "error",
                     "text": f"Verification stopped ({e}); keeping the latest anatomy"})
+    # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
+    try:
+        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model)
+    except meta.MetaAPIError as e:
+        await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
+                    "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
     return await _with_profile(A.sanitize(work), profile, emit)
 
 

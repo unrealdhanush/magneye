@@ -33,6 +33,8 @@ export interface Part {
   grounded?: boolean
   /** Changed by the user in the blueprint, or by the guide at their request. */
   edited?: boolean
+  /** The modeler's geometry recipe (see src/magneye/model.py); built server-side into a real mesh. */
+  model?: Record<string, unknown> | null
 }
 
 export interface Connection { from: string; to: string; kind: string; label: string }

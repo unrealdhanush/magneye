@@ -53,6 +53,7 @@ async def run_loop(
     max_turns: int = 8,
     reasoning_effort: str = "medium",
     until: str | None = None,
+    max_tokens: int = 8000,
 ) -> str:
     """Run model turns until it answers without tools, a tool stops the loop, or turns run out.
 
@@ -66,7 +67,7 @@ async def run_loop(
     nudged = False
     for _ in range(max_turns):
         msg = await meta.chat(model=model, messages=messages, tools=[t.spec() for t in tools],
-                              reasoning_effort=reasoning_effort)
+                              reasoning_effort=reasoning_effort, max_tokens=max_tokens)
         calls = msg.get("tool_calls") or []
         messages.append({"role": "assistant", "content": msg.get("content") or "", **({"tool_calls": calls} if calls else {})})
         if msg.get("content") and calls:
