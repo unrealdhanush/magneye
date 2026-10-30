@@ -177,7 +177,15 @@ def _stream(d: Path, work: Callable[[Emit], Awaitable[None]]) -> StreamingRespon
 
     async def events():
         task = asyncio.create_task(runner())
-        while (event := await queue.get()) is not None:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), KEEPALIVE_S)
+            except asyncio.TimeoutError:
+                # A comment line keeps proxies from closing a stream that is quiet while a model thinks.
+                yield ": keep-alive\n\n"
+                continue
+            if event is None:
+                break
             yield f"data: {json.dumps(event)}\n\n"
         await task
 
@@ -185,6 +193,7 @@ def _stream(d: Path, work: Callable[[Emit], Awaitable[None]]) -> StreamingRespon
 
 
 TRACED = {"user", "step", "thought", "question", "answer", "error"}
+KEEPALIVE_S = 15
 
 
 @app.get("/api/sessions/{sid}/original.jpg")
