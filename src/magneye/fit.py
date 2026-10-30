@@ -59,9 +59,7 @@ class Outline:
 
 
 def _corners(p: dict[str, Any]) -> np.ndarray:
-    c, s = np.array(p["center_mm"], float), np.array(p["size_mm"], float) / 2
-    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], float)
-    return c + signs * s
+    return np.array(pose.box_corners(p["center_mm"], p["size_mm"], p.get("rotation_deg")), float)
 
 
 def _projected(parts: list[dict[str, Any]], camera: dict[str, float]) -> list[np.ndarray]:

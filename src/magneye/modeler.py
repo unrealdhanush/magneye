@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from . import fit, meta
+from .checks import geometry_issues
 from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
 
@@ -19,7 +20,7 @@ What to model, in this order: every exterior part (its rounded edges and corners
 
 {M.OPS_DOC}
 
-A recipe is in millimetres around the part's own centre, in the object's axes (x its right, y up, z out of its front). The built solid is fitted to the part's size_mm wherever it is shown, so get the proportions and features right; the size and place stay as they are. Keep each recipe under 40 nodes.
+A recipe is in millimetres around the part's own centre, in the part's own frame: the frame its size_mm is measured in, which its rotation_deg then turns into place in the object (x its right, y up, z out of its front). So build the part as it is before that turn, at its real size: the built size becomes the part's size_mm. Keep each recipe under 40 nodes.
 
 Tools:
 - model_parts(models): build recipes for several parts in one call; each reports its built size against the part's and any error to fix.
@@ -84,13 +85,16 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
                 continue
             b = solid.bounding_box()
             size = [round(b[3 + i] - b[i], 1) for i in range(3)]
-            entry: dict[str, Any] = {"id": pid, "ok": True, "built_size_mm": size, "part_size_mm": part["size_mm"]}
-            # It is stretched to the part's size anyway; a big mismatch means the proportions are probably wrong.
+            entry: dict[str, Any] = {"id": pid, "ok": True, "built_size_mm": size, "was_size_mm": part["size_mm"]}
+            # The recipe is the truth about the part's form: its built size becomes the part's size, so nothing is
+            # stretched. A big change usually means the recipe is turned against the part's own frame.
             off = [i for i in range(3) if part["size_mm"][i] > 0 and not 0.75 < size[i] / part["size_mm"][i] < 1.33]
             if off:
-                entry["note"] = f"proportions differ from the part along {', '.join('xyz'[i] for i in off)}; it will be stretched to fit"
+                entry["note"] = (f"built size differs from the part's along {', '.join('xyz'[i] for i in off)}; the part now takes "
+                                 "the built size; if that is wrong, the recipe is probably turned against the part's own frame")
             report.append(entry)
             part["model"] = recipe
+            part["size_mm"] = size
             solids[pid] = solid
             built.append(pid)
         if built:
@@ -102,7 +106,9 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
     async def view_models(_: dict[str, Any]) -> ToolResult:
         sheet = _panels(photo, box, anatomy, solids)
         score = f" Overlap with SAM's outline of the object: {fit.coverage(anatomy, outline):.0%} (higher is better)." if outline else ""
-        return ToolResult(f"The renders are attached in the next message.{score}", f"Drew {_count(len(solids), 'model')} over the photo{score and ' · ' + score.split(': ')[1].split(' ')[0] + ' overlap'}",
+        gaps = [i for i in geometry_issues(anatomy) if "apart; move them to touch" in i]
+        joins = (" Joined parts that don't touch yet: " + " ".join(gaps)) if gaps else ""
+        return ToolResult(f"The renders are attached in the next message.{score}{joins}", f"Drew {_count(len(solids), 'model')} over the photo{score and ' · ' + score.split(': ')[1].split(' ')[0] + ' overlap'}",
                           attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}])
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:

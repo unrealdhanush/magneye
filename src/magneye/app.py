@@ -316,7 +316,7 @@ class Ask(BaseModel):
     prompt: str
 
 
-MODELS_FORMAT = "2"  # 2: with blueprint outlines
+MODELS_FORMAT = "3"  # 2: blueprint outlines; 3: outlines placed by size and rotation
 
 
 @app.get("/api/sessions/{sid}/models")
@@ -324,16 +324,18 @@ def session_models(sid: str) -> dict[str, Any]:
     """Meshes of the parts that have geometry recipes, built by Manifold and cached until a recipe changes."""
     d = _session_dir(sid)
     anatomy = _read_json(d / "anatomy.json") or {"parts": []}
-    recipes = {p["id"]: p["model"] for p in anatomy["parts"] if p.get("model")}
-    # The format version is part of the key, so meshes cached before a format change are rebuilt.
-    key = hashlib.sha256((MODELS_FORMAT + json.dumps(recipes, sort_keys=True)).encode()).hexdigest()[:16]
+    modeled = {p["id"]: p for p in anatomy["parts"] if p.get("model")}
+    # Outlines depend on each part's size and rotation as well as its recipe; the format version is part of the key
+    # too, so meshes cached before a format change are rebuilt.
+    placed = {pid: [p["model"], p["size_mm"], p.get("rotation_deg")] for pid, p in modeled.items()}
+    key = hashlib.sha256((MODELS_FORMAT + json.dumps(placed, sort_keys=True)).encode()).hexdigest()[:16]
     cached = _read_json(d / "models.json")
     if cached and cached.get("key") == key:
         return cached
     meshes: dict[str, Any] = {}
-    for pid, recipe in recipes.items():
+    for pid, part in modeled.items():
         try:
-            meshes[pid] = model_kit.encode(model_kit.build(recipe))
+            meshes[pid] = model_kit.encode(model_kit.build(part["model"]), part)
         except model_kit.RecipeError:
             continue  # an edited part whose recipe no longer builds is drawn as its primitive
     out = {"key": key, "parts": meshes}

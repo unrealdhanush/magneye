@@ -108,17 +108,14 @@ function zigzag(cx: number, cy: number, w: number, h: number, alongU: boolean) {
 }
 
 /**
- * A modeled part's real silhouette in a view: the recipe's projected outline, fitted to the part's size and place
- * the same way the 3D view fits its mesh. Through-holes come out as inner contours.
+ * A modeled part's real silhouette in a view: the solid's projected outline as placed (sized and turned like the
+ * 3D mesh), relative to the part's centre. Through-holes come out as inner contours.
  */
-export function outlineGlyphs(view: View, part: Part, outline: { min: Vec3; max: Vec3; polygons: [number, number][][] },
+export function outlineGlyphs(view: View, part: Part, polygons: [number, number][][],
   toSheet: (u: number, v: number) => [number, number]): Glyph[] {
-  const fit = (a: { axis: 0 | 1 | 2; sign: 1 | -1 }, raw: number) => {
-    const i = a.axis, span = Math.max(outline.max[i] - outline.min[i], 1e-6), mid = (outline.max[i] + outline.min[i]) / 2
-    return a.sign * (part.center_mm[i] + (a.sign * raw - mid) * (part.size_mm[i] / span))
-  }
-  const d = outline.polygons.map(poly => poly.map(([u, v], k) => {
-    const [x, y] = toSheet(fit(view.u, u), fit(view.v, v))
+  const cu = part.center_mm[view.u.axis] * view.u.sign, cv = part.center_mm[view.v.axis] * view.v.sign
+  const d = polygons.map(poly => poly.map(([u, v], k) => {
+    const [x, y] = toSheet(cu + u, cv + v)
     return `${k ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`
   }).join(' ') + ' Z').join(' ')
   return d ? [{ kind: 'path', d }] : []

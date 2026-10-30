@@ -170,7 +170,7 @@ export function Blueprint({ anatomy, selectedId, onSelect, onMove, sessionId, ou
             const d = delay(0.15 + vi * 0.15 + Math.min(pi * 0.02, 0.4))
             const real = outlines?.get(p.id)
             const box = real?.views[pv.view.name]?.length
-              ? outlineGlyphs(pv.view, p, { min: real.min, max: real.max, polygons: real.views[pv.view.name] }, pv.toSheet)
+              ? outlineGlyphs(pv.view, p, real.views[pv.view.name], pv.toSheet)
               : pieces(p).flatMap(pc => glyphs(pv.view, pc.shape, pc.center, pc.size, pv.toSheet, k))
             const hit = glyphs(pv.view, 'box', p.center_mm, p.size_mm, pv.toSheet, k)[0] as Extract<Glyph, { kind: 'rect' }>
             return (

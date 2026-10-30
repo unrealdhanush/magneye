@@ -4,7 +4,7 @@ import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.j
 import type { Anatomy, Vec3 } from '../types'
 
 type Polygons = [number, number][][]
-/** A modeled part's silhouettes in each blueprint view, in the recipe's millimetres, with the recipe's bounds. */
+/** A modeled part's silhouettes in each blueprint view, sized and turned as placed, relative to the part's centre (mm). */
 export interface PartOutline { min: Vec3; max: Vec3; views: Record<'front' | 'top' | 'right', Polygons> }
 interface Encoded { positions: string; indices: string; min: Vec3; max: Vec3; outlines: PartOutline['views'] }
 export interface PartModels { meshes: Map<string, THREE.BufferGeometry>; outlines: Map<string, PartOutline> }
@@ -12,13 +12,15 @@ const NONE: PartModels = { meshes: new Map(), outlines: new Map() }
 
 const bytes = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer
 
-/** A built part mesh as unit-sized geometry centred on its origin, so the viewer can fit it to the part's size. */
+/**
+ * A built part mesh in the part's own frame, scaled to unit size about the recipe's origin (the part's centre), so
+ * the viewer can size it to the part's size_mm and turn it by its rotation like any other piece.
+ */
 function decode(m: Encoded): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bytes(m.positions)), 3))
   g.setIndex(new THREE.BufferAttribute(new Uint32Array(bytes(m.indices)), 1))
   const span = m.max.map((v, i) => Math.max(v - m.min[i], 1e-6))
-  g.translate(...(m.min.map((v, i) => -(v + m.max[i]) / 2) as [number, number, number]))
   g.scale(1 / span[0], 1 / span[1], 1 / span[2])
   // Smooth across gentle curves, crisp at real edges.
   return toCreasedNormals(g, Math.PI / 6)

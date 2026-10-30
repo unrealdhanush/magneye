@@ -1,9 +1,9 @@
 """True 3D parts from geometry recipes.
 
 Muse Wonder describes a part as a small tree of solid operations; Manifold (the geometry kernel behind OpenSCAD)
-builds it. A recipe is only data, never code, in millimetres around the part's centre and in the object's own axes
-(x its right, y up, z out of its front). The built solid is fitted to the part's size_mm wherever it is shown, so a
-recipe sets the part's form and features while the anatomy keeps its size and place.
+builds it. A recipe is only data, never code, in millimetres around the part's centre, in the part's own frame:
+the same frame as its size_mm, which its rotation_deg turns into the object's frame. The viewer, the renders, the
+fit and the blueprint all place a part the same way (see placement()).
 
     {"op": "difference", "of": [
         {"op": "box", "size": [60, 45, 22], "radius": 6},
@@ -239,24 +239,37 @@ def outlines(solid: Manifold) -> dict[str, list[list[list[float]]]]:
     return out
 
 
-def encode(solid: Manifold) -> dict[str, Any]:
-    """A solid for the viewer: base64 float32 positions and uint32 indices, its bounds in millimetres, and its
-    silhouettes for the blueprint."""
+def encode(solid: Manifold, part: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A solid for the viewer: base64 float32 positions and uint32 indices in the recipe's own frame and its
+    bounds in millimetres; with the part, also its blueprint silhouettes as placed (turned and sized), relative to
+    the part's centre."""
     v, t = arrays(solid)
     lo, hi = v.min(axis=0), v.max(axis=0)
-    return {"positions": base64.b64encode(v.tobytes()).decode(), "indices": base64.b64encode(t.tobytes()).decode(),
-            "min": [round(float(x), 3) for x in lo], "max": [round(float(x), 3) for x in hi], "outlines": outlines(solid)}
+    out = {"positions": base64.b64encode(v.tobytes()).decode(), "indices": base64.b64encode(t.tobytes()).decode(),
+           "min": [round(float(x), 3) for x in lo], "max": [round(float(x), 3) for x in hi]}
+    if part is not None:
+        out["outlines"] = outlines(placed({**part, "center_mm": [0, 0, 0]}, solid))
+    return out
 
 
-def fitted(part: dict[str, Any], v: np.ndarray) -> np.ndarray:
-    """A part's mesh scaled to its size_mm and moved to its centre, as the viewer shows it."""
-    lo, hi = v.min(axis=0), v.max(axis=0)
-    span = np.where(hi - lo > 1e-6, hi - lo, 1)
-    return (v - (lo + hi) / 2) * (np.array(part["size_mm"], dtype=np.float32) / span) + np.array(part["center_mm"], dtype=np.float32)
+def placement(part: dict[str, Any], solid: Manifold) -> np.ndarray:
+    """The 3x4 transform that puts a part's built solid where the viewer shows it: scaled about the recipe's origin
+    from its built size to the part's size_mm (the same size until the user resizes it), turned by the part's
+    rotation, moved to its centre."""
+    b = solid.bounding_box()
+    span = np.array([max(b[3 + i] - b[i], 1e-6) for i in range(3)])
+    scale = np.diag(np.array(part["size_mm"], float) / span)
+    turn = np.array(pose.part_rotation(part.get("rotation_deg") or [0, 0, 0]))
+    return np.hstack([turn @ scale, np.array(part["center_mm"], float).reshape(3, 1)])
 
 
-def _box(part: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-    return arrays(Manifold.cube(part["size_mm"], True).translate(part["center_mm"]))
+def placed(part: dict[str, Any], solid: Manifold) -> Manifold:
+    return solid.transform(placement(part, solid))
+
+
+def _box(part: dict[str, Any]) -> Manifold:
+    cube = Manifold.cube(part["size_mm"], True)
+    return cube.transform(placement(part, cube))
 
 
 def _shaded(anatomy: dict[str, Any], solids: dict[str, Manifold], internals: bool,
@@ -269,11 +282,7 @@ def _shaded(anatomy: dict[str, Any], solids: dict[str, Manifold], internals: boo
     for p in anatomy["parts"]:
         if internals and p["kind"] != "internal":
             continue
-        if p["id"] in solids:
-            v, t = arrays(solids[p["id"]])
-            v = fitted(p, v)
-        else:
-            v, t = _box(p)
+        v, t = arrays(placed(p, solids[p["id"]]) if p["id"] in solids else _box(p))
         tris.append((v @ rot.T)[t])
         colours.append(np.repeat(np.array([COLOUR.get(p["material"], COLOUR["other"])], dtype=np.float32), len(t), axis=0))
     if not tris:

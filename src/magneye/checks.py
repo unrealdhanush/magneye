@@ -12,9 +12,19 @@ from .ground import Frame
 
 
 def _bounds(p: dict[str, Any]) -> tuple[list[float], list[float]]:
-    lo = [c - s / 2 for c, s in zip(p["center_mm"], p["size_mm"])]
-    hi = [c + s / 2 for c, s in zip(p["center_mm"], p["size_mm"])]
-    return lo, hi
+    """A part's extent in the object frame, with its box turned by its rotation."""
+    corners = pose.box_corners(p["center_mm"], p["size_mm"], p.get("rotation_deg"))
+    return [min(c[i] for c in corners) for i in range(3)], [max(c[i] for c in corners) for i in range(3)]
+
+
+# Links that only work when the parts touch (a signal, light, magnetism or air can cross a gap).
+TOUCHING = {"mechanical", "electrical", "fluid", "thermal"}
+MAX_GAP_MM = 3.0
+
+
+def _gap(a: dict[str, Any], b: dict[str, Any]) -> float:
+    (alo, ahi), (blo, bhi) = _bounds(a), _bounds(b)
+    return sum(max(0.0, blo[i] - ahi[i], alo[i] - bhi[i]) ** 2 for i in range(3)) ** 0.5
 
 
 def _volume(p: dict[str, Any]) -> float:
@@ -31,8 +41,8 @@ def _overlap(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 
 def geometry_issues(anatomy: dict[str, Any]) -> list[str]:
-    """Physical-plausibility problems: parts outside the object, internal parts sharing space,
-    and disassembly paths that dig outward."""
+    """Physical-plausibility problems: parts outside the object, joined parts that don't touch, internal parts
+    sharing space, and disassembly paths that dig outward."""
     issues: list[str] = []
     dims = anatomy["object"]["dimensions_mm"]
     parts = anatomy["parts"]
@@ -51,6 +61,12 @@ def geometry_issues(anatomy: dict[str, Any]) -> list[str]:
             if a > 0 and b / a > 1.3:
                 issues.append(f"{p['id']} is a round {p['shape']} but its diameters differ ({a:.0f} vs {b:.0f} mm); "
                               f"a SAM box may have caught neighbouring parts.")
+    apart = []
+    for c in anatomy.get("connections", []):
+        a, b = by_id.get(c["from"]), by_id.get(c["to"])
+        if a and b and c.get("kind") in TOUCHING and (gap := _gap(a, b)) > MAX_GAP_MM:
+            apart.append(f"{a['id']} and {b['id']} are joined ({c['kind']}) but {gap:.0f} mm apart; move them to touch.")
+    issues += apart[:6]
     internal = [p for p in parts if p["kind"] == "internal"]
     for i, a in enumerate(internal):
         for b in internal[i + 1:]:
@@ -90,7 +106,7 @@ def layout_overlay(photo_jpeg: bytes, frame: Frame, anatomy: dict[str, Any]) -> 
     draw = ImageDraw.Draw(im, "RGBA")
     draw.rectangle(frame.box, outline=(255, 255, 255, 255), width=3)
     for p in sorted(anatomy["parts"], key=lambda q: -q["layer"]):
-        outline = [frame.to_px(x, y) for x, y in _hull(pose.box_corners_in_photo(anatomy, p["center_mm"], p["size_mm"]))]
+        outline = [frame.to_px(x, y) for x, y in _hull(pose.box_corners_in_photo(anatomy, p["center_mm"], p["size_mm"], p.get("rotation_deg")))]
         colour = (64, 200, 224) if p["kind"] == "exterior" else (255, 159, 10)
         draw.polygon(outline, outline=colour + (255,), fill=colour + (40,), width=2)
         left, top = min(x for x, _ in outline), min(y for _, y in outline)

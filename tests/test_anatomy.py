@@ -89,3 +89,24 @@ def test_ground_ignores_oval_boxes_for_round_parts(monkeypatch):
     g = asyncio.run(G.ground(b"", (400, 600), anatomy))
     bezel = anatomy["parts"][0]
     assert "bezel" not in g["parts"] and not bezel.get("grounded") and bezel["size_mm"] == [40, 40, 3]
+
+
+
+def test_geometry_flags_joined_parts_that_dont_touch_and_honours_rotation():
+    from magneye.checks import geometry_issues
+    board = {**_part("board", center=(0, 0, 0), size=(40, 2, 30)), "shape": "plate"}
+    # The board's top is at y = 1; the cable runs from there up to y = 21; the LED floats at 47..52.
+    cable = {**_part("cable", center=(0, 11, 0), size=(4, 20, 2))}
+    led = {**_part("led", center=(0, 49.5, 0), size=(5, 5, 5))}
+    anatomy = {"object": {"dimensions_mm": [200, 200, 200]}, "parts": [board, cable, led], "failures": [],
+               "connections": [{"from": "board", "to": "cable", "kind": "electrical"},
+                               {"from": "cable", "to": "led", "kind": "electrical"},
+                               {"from": "board", "to": "led", "kind": "signal"}]}
+    issues = geometry_issues(anatomy)
+    assert any(i.startswith("cable and led are joined (electrical) but 26 mm apart") for i in issues)
+    assert not any(i.startswith("board and cable") for i in issues) and not any("board and led" in i for i in issues)
+    # A long thin part stood up by its rotation reaches its neighbour.
+    cable["size_mm"], cable["rotation_deg"] = [20, 4, 2], [0, 0, 90]
+    near = {**led, "center_mm": [0, 23.5, 0]}
+    issues = geometry_issues({**anatomy, "parts": [board, cable, near]})
+    assert not any("cable and led" in i or "board and cable" in i for i in issues)

@@ -225,10 +225,10 @@ interface Piece { geometry: THREE.BufferGeometry; scale: Vec3; axis: THREE.Euler
  */
 function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | null, texture: THREE.Texture, mesh?: THREE.BufferGeometry) {
   return useMemo(() => {
-    // A modeled part: its real mesh, already in the object's axes, stretched to the part's size.
+    // A modeled part: its real mesh in the part's own frame, sized to the part and turned by its rotation below.
     if (mesh) {
       const m = surface(part.material)
-      return { fixed: true, pieces: [{ geometry: mesh, scale: part.size_mm.map(v => v * s) as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: m }], materials: [m] }
+      return { fixed: false, pieces: [{ geometry: mesh, scale: part.size_mm.map(v => v * s) as Vec3, axis: new THREE.Euler(), position: [0, 0, 0] as Vec3, rotation: [0, 0, 0] as Vec3, material: m }], materials: [m] }
     }
     const match = part.grounded ? ground?.parts[part.id] : undefined
     const home = new THREE.Vector3(...part.center_mm).multiplyScalar(s)
@@ -382,7 +382,7 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(part.id) }}
       onPointerOver={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer' }}
       onPointerOut={() => { setHovered(false); document.body.style.cursor = '' }}>
-      {/* Photo-cut and modeled pieces are already oriented in the object's frame, so the part's rotation does not apply. */}
+      {/* Photo-cut pieces are already oriented in the object's frame, so the part's rotation does not apply to them. */}
       <group rotation={fixed ? [0, 0, 0] : part.rotation_deg.map(d => d * DEG) as [number, number, number]}>
         <group ref={spinner}>
           {pieces.map((pc, i) => (

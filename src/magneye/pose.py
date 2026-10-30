@@ -78,13 +78,28 @@ def shift_in_photo(anatomy: dict[str, Any], delta: Vec) -> Vec:
     return apply(transpose(rotation(anatomy)), delta)
 
 
-def box_corners_in_photo(anatomy: dict[str, Any], center: Vec, size: Vec) -> list[tuple[float, float]]:
-    """The photo-plane (x, y) of an object-frame box's eight corners."""
-    m = rotation(anatomy)
+def box_corners(center: Vec, size: Vec, rotation_deg: Vec | None = None) -> list[Vec]:
+    """The eight corners of a part's box in the object frame: sized in its own frame, turned by its rotation."""
+    turn = part_rotation(rotation_deg or [0, 0, 0])
     out = []
     for sx in (-0.5, 0.5):
         for sy in (-0.5, 0.5):
             for sz in (-0.5, 0.5):
-                c = apply(m, [center[0] + sx * size[0], center[1] + sy * size[1], center[2] + sz * size[2]])
-                out.append((c[0], c[1]))
+                r = apply(turn, [sx * size[0], sy * size[1], sz * size[2]])
+                out.append([center[i] + r[i] for i in range(3)])
     return out
+
+
+def box_corners_in_photo(anatomy: dict[str, Any], center: Vec, size: Vec, rotation_deg: Vec | None = None) -> list[tuple[float, float]]:
+    """The photo-plane (x, y) of a part box's eight corners."""
+    m = rotation(anatomy)
+    return [(c[0], c[1]) for c in (apply(m, k) for k in box_corners(center, size, rotation_deg))]
+
+
+def part_rotation(rotation_deg: Vec) -> Matrix:
+    """A part's own frame -> the object's frame, exactly as the viewer turns it (three.js Euler XYZ: Rx · Ry · Rz)."""
+    x, y, z = (math.radians(float(v or 0)) for v in (list(rotation_deg) + [0, 0, 0])[:3])
+    rx = [[1, 0, 0], [0, math.cos(x), -math.sin(x)], [0, math.sin(x), math.cos(x)]]
+    ry = [[math.cos(y), 0, math.sin(y)], [0, 1, 0], [-math.sin(y), 0, math.cos(y)]]
+    rz = [[math.cos(z), -math.sin(z), 0], [math.sin(z), math.cos(z), 0], [0, 0, 1]]
+    return _mul(rx, _mul(ry, rz))
