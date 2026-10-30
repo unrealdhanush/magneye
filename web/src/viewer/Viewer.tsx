@@ -8,7 +8,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
 import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, warpToProfile, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_FINISH, MATERIAL_LOOK } from './palette'
-import { isFrontal, photoExtent, photoRotation, spanInPhoto, startCamera } from './pose'
+import { isFrontal, isSteep, photoExtent, photoRotation, spanInPhoto, startCamera } from './pose'
 
 export const REMOVE_MS = 750
 
@@ -125,7 +125,9 @@ function Scene(p: ViewerProps) {
       {ordered.map(part => (
         <PartMesh key={part.id} part={part} s={s} maxLayer={maxLayer} registry={registry} delay={(rank.get(part.id) ?? 0) * stagger} {...p} />
       ))}
-      {p.ground && (p.meshUrl
+      {/* From a steep angle the photo shell is a poor stand-in for the object's volume; when the outside is
+          modeled, the models carry the shape and the shell is left out. */}
+      {p.ground && !(isSteep(p.anatomy) && p.anatomy.parts.some(x => x.kind === 'exterior' && x.model)) && (p.meshUrl
         ? <MeshShell url={p.meshUrl} anatomy={p.anatomy} explode={p.explode} xray={p.xray} playback={p.playback} assembleAt={p.assembleAt} delay={shellDelay} />
         : <PhotoShell anatomy={p.anatomy} ground={p.ground} imageUrl={p.imageUrl} explode={p.explode} xray={p.xray} playback={p.playback} assembleAt={p.assembleAt} delay={shellDelay} />)}
       {p.playback.kind === 'scenario' && <ScenarioPath scenario={p.playback.scenario} startedAt={p.playback.startedAt} registry={registry} />}
