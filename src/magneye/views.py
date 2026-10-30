@@ -42,6 +42,7 @@ For each candidate:
 - same_shape: true if it shows an object with the same body shape as image 0: the same model, or a variant that differs only in colour, material, dial or finish. A different generation, size or redesigned body is false.
 - view: which side of the object faces the camera, relative to image 0. "front" = the side facing the camera in image 0; "left"/"right" = the side that is on the left/right in image 0; "back", "top", "bottom"; "three_quarter" for an angled view showing two sides; "detail" for a close-up of one feature; "other" for anything else (packaging, people using it, no object at all). A photo of a few units side by side (a comparison) still gets the view they are shown from.
 - clean: the whole object is in view, not cut off and not mostly hidden by hands or other things.
+- upright: the object is the same way up as in image 0 (its top at the top), not lying down or turned.
 - note: what it shows that image 0 does not, in under 12 words.
 Output only JSON matching the schema."""
 
@@ -54,9 +55,10 @@ VET_SCHEMA = {
             "same_shape": {"type": "boolean"},
             "view": {"type": "string", "enum": VIEWS},
             "clean": {"type": "boolean"},
+            "upright": {"type": "boolean"},
             "note": {"type": "string"},
         },
-        "required": ["index", "same_shape", "view", "clean", "note"],
+        "required": ["index", "same_shape", "view", "clean", "upright", "note"],
     }}},
     "required": ["candidates"],
 }
@@ -177,7 +179,8 @@ def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[di
             continue
         rank = (int(bool(v.get("clean"))), int(cands[i]["origin"] == "commons"))
         if v["view"] not in best or rank > best[v["view"]][0]:
-            best[v["view"]] = (rank, {**cands[i], "view": v["view"], "note": v.get("note", "")})
+            best[v["view"]] = (rank, {**cands[i], "view": v["view"], "note": v.get("note", ""),
+                                      "clean": bool(v.get("clean")), "upright": bool(v.get("upright"))})
     ordered = sorted(best.values(), key=lambda rv: (-rv[0][0], USEFUL.index(rv[1]["view"])))
     return [c for _, c in ordered[:MAX_VIEWS]]
 
@@ -193,6 +196,50 @@ async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]]
         reasoning_effort="low", max_tokens=3000,
     )
     return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
+
+
+PROFILE_ROWS = 48
+
+
+def profile_view(picked: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A side view that shows the whole object the right way up, so its outline is the object's side profile."""
+    return next((v for v in picked if v["view"] in ("left", "right") and v.get("clean") and v.get("upright")), None)
+
+
+async def side_profile(view: dict[str, Any], phrase: str) -> dict[str, Any] | None:
+    """The object's depth at each height, from SAM 3.1's outline of it in a side view.
+
+    Rows run top to bottom; each is the [back, front] extent as fractions of the object's depth (-0.5 to 0.5, front
+    toward the camera of the user's photo). Seen from the right, the front is on the image's left; from the left,
+    on its right.
+    """
+    matches = await meta.segment(view["jpeg"], phrase)
+    if not matches:
+        return None
+    m = max(matches, key=lambda m: (m["confidence"] or 0) * m["coverage"] * m["mask_size"][0] * m["mask_size"][1])
+    w, h = m["mask_size"]
+    raster = bytes(m["raster"])
+    rows: list[list[float] | None] = []
+    for k in range(PROFILE_ROWS):
+        lo, hi = w, -1
+        for r in range(k * h // PROFILE_ROWS, max((k + 1) * h // PROFILE_ROWS, k * h // PROFILE_ROWS + 1)):
+            line = raster[r * w:(r + 1) * w]
+            first = line.find(1)
+            if first >= 0:
+                lo, hi = min(lo, first), max(hi, line.rfind(1))
+        if hi < 0:
+            rows.append(None)
+            continue
+        u0, u1 = lo / w, (hi + 1) / w
+        rows.append([round(0.5 - u1, 3), round(0.5 - u0, 3)] if view["view"] == "right" else [round(u0 - 0.5, 3), round(u1 - 0.5, 3)])
+    filled = [r for r in rows if r]
+    if len(filled) < PROFILE_ROWS // 2:
+        return None
+    # Rows the outline misses (thin tips, holes) borrow their nearest filled neighbour.
+    for i, r in enumerate(rows):
+        if r is None:
+            rows[i] = min(((abs(i - j), rows[j]) for j in range(PROFILE_ROWS) if rows[j]), key=lambda d: d[0])[1]
+    return {"view": view["view"], "page_url": view["page_url"], "rows": rows}
 
 
 def cite(view: dict[str, Any]) -> dict[str, Any]:

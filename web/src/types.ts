@@ -69,6 +69,8 @@ export interface Anatomy {
   research?: { notes: string; sources: { url: string; title: string }[]; searches: string[] }
   /** Photos of the same product from other angles that the draft saw. Commons photos carry an image and licence. */
   references?: Reference[]
+  /** Depth at each height from a side view: rows top to bottom, [back, front] as fractions of the depth. */
+  profile?: { view: string; page_url: string; rows: [number, number][] }
 }
 
 export interface Reference {

@@ -229,3 +229,21 @@ def test_builder_moves_the_body_in_one_call(monkeypatch):
 
 async def _no_research(**_):
     raise meta.MetaAPIError("offline")
+
+
+def test_side_profile_maps_outline_rows_to_depth(monkeypatch):
+    # A 10 x 48 px side-view mask: the top half is 5 px deep at the image's left, the bottom half fills the width.
+    w, h = 10, 48
+    raster = bytes(1 if (c < 5 or r >= 24) else 0 for r in range(h) for c in range(w))
+
+    async def fake_segment(_image, _phrase):
+        return [{"confidence": 0.9, "coverage": 0.75, "mask_size": [w, h], "raster": raster}]
+
+    monkeypatch.setattr(meta, "segment", fake_segment)
+    view = {"view": "right", "page_url": "https://x", "jpeg": b"", "clean": True, "upright": True}
+    assert views.profile_view([{**view, "view": "back"}, view]) is view
+    prof = asyncio.run(views.side_profile(view, "controller"))
+    # Seen from the right, the image's left is the front: the thin top sits at the front half of the depth.
+    assert prof["rows"][0] == [0.0, 0.5] and prof["rows"][-1] == [-0.5, 0.5] and len(prof["rows"]) == 48
+    mirrored = asyncio.run(views.side_profile({**view, "view": "left"}, "controller"))
+    assert mirrored["rows"][0] == [-0.5, 0.0]

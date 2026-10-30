@@ -181,6 +181,29 @@ export function explodeDirection(part: Part, s: number, maxLayer: number, bodyCe
   return dir.multiplyScalar(reach)
 }
 
+/**
+ * Bends a shell extruded straight back into the object's real side profile: each vertex keeps its place between
+ * the back and front faces, but those faces now follow the depth the side view shows at that height.
+ */
+export function warpToProfile(g: THREE.BufferGeometry, anatomy: Anatomy) {
+  const rows = anatomy.profile?.rows
+  if (!rows?.length) return g
+  const s = worldScale(anatomy)
+  const [, dh, dd] = anatomy.object.dimensions_mm
+  const height = dh * s, depth = dd * s
+  const pos = g.getAttribute('position')
+  for (let i = 0; i < pos.count; i++) {
+    const f = Math.min(Math.max((height / 2 - pos.getY(i)) / height, 0), 1) * (rows.length - 1)
+    const a = rows[Math.floor(f)], b = rows[Math.ceil(f)], k = f - Math.floor(f)
+    const back = a[0] + (b[0] - a[0]) * k, front = a[1] + (b[1] - a[1]) * k
+    const u = pos.getZ(i) / depth + 0.5
+    pos.setZ(i, (back + u * (front - back)) * depth)
+  }
+  pos.needsUpdate = true
+  g.computeVertexNormals()
+  return g
+}
+
 /** A SAM 3.1 mask outline as shapes in world units, in the object's frame (photo = front view). */
 export function maskShapes(match: MaskMatch, anatomy: Anatomy, ground: Ground): THREE.Shape[] {
   const obj = ground.object

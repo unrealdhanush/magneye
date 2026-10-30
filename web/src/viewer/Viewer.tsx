@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '../types'
-import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, worldScale } from './geometry'
+import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, warpToProfile, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_LOOK } from './palette'
 
 export const REMOVE_MS = 750
@@ -404,7 +404,7 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assemb
     const shapes = maskShapes(ground.object, anatomy, ground)
     const front = extrudeMask(shapes, anatomy, ground, 0, depth / 2, [FACE.cut, FACE.photo])
     const back = extrudeMask(shapes, anatomy, ground, -depth / 2, 0, [FACE.back, FACE.cut])
-    return front && back ? { front, back } : null
+    return front && back ? { front: warpToProfile(front, anatomy), back: warpToProfile(back, anatomy) } : null
   }, [anatomy, ground, depth])
   // With accessories (a bracelet, a cable) the shell is trimmed to the main body; the accessories have pieces of their own.
   const clip = useMemo(() => {

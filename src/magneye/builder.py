@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -101,6 +102,9 @@ async def build(
         draft["research"] = {"notes": research["text"][:6000], "sources": research["sources"][:12], "searches": research["searches"]}
     if picked:
         draft["references"] = [views.cite(v) for v in picked]
+    # The side profile only needs SAM on a reference photo, so it runs while the draft is verified.
+    side = views.profile_view(picked)
+    profile = asyncio.create_task(views.side_profile(side, draft["object"]["sam_prompt"])) if side else None
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "done",
                 "text": f"Drafted {draft['object']['name']} with {len(draft['parts'])} parts"})
     await emit({"type": "anatomy", "anatomy": draft})
@@ -109,7 +113,7 @@ async def build(
     if found is None:
         await emit({"type": "step", "agent": "builder", "tool": "find_in_photo", "status": "error",
                     "text": f"SAM 3.1 couldn't find “{draft['object']['sam_prompt']}”; keeping the unverified draft"})
-        return draft
+        return await _with_profile(draft, profile, emit)
     await emit({"type": "step", "agent": "builder", "tool": "find_in_photo", "status": "done",
                 "text": f"SAM 3.1 found the {draft['object']['sam_prompt']}"})
     frame, target = found
@@ -216,4 +220,23 @@ async def build(
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "verify", "status": "error",
                     "text": f"Verification stopped ({e}); keeping the latest anatomy"})
-    return A.sanitize(work)
+    return await _with_profile(A.sanitize(work), profile, emit)
+
+
+async def _with_profile(anatomy: dict[str, Any], task: asyncio.Task | None, emit: Emit) -> dict[str, Any]:
+    if task is None:
+        return anatomy
+    try:
+        found = await task
+    except Exception as e:  # the profile is a refinement; never fail the build over it
+        found, err = None, str(e)
+    else:
+        err = "no outline"
+    if found:
+        anatomy["profile"] = found
+        await emit({"type": "step", "agent": "builder", "tool": "side_profile", "status": "done",
+                    "text": f"SAM 3.1 traced the side profile in the {found['view']} view"})
+    else:
+        await emit({"type": "step", "agent": "builder", "tool": "side_profile", "status": "error",
+                    "text": f"No side profile ({err}); the shell keeps a straight depth"})
+    return anatomy
