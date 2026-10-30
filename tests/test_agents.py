@@ -278,3 +278,17 @@ def test_found_views_skip_sides_the_user_already_covered():
                 {"index": 2, "same_shape": True, "view": "left", "clean": True, "note": ""},
                 {"index": 3, "same_shape": True, "view": "back", "clean": True, "note": ""}]
     assert [(v["origin"], v["view"]) for v in views.pick(cands, verdicts)] == [("user", "left"), ("web", "back")]
+
+def test_vetting_failure_still_keeps_the_users_own_photos(monkeypatch):
+    async def broken_vet(**_):
+        raise meta.MetaAPIError("muse-wonder-1.0 did not return valid JSON")
+
+    monkeypatch.setattr(meta, "chat_json", broken_vet)
+    found = asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", own=[_photo(), _photo()]))
+    assert found["unvetted"] and [(v["origin"], v["own"]) for v in found["views"]] == [("user", 0), ("user", 1)]
+    assert views.profile_view(found["views"]) is None
+    # With nothing of the user's to fall back on, the failure is reported as before.
+    try:
+        asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", own=[]))
+    except meta.MetaAPIError:
+        raise AssertionError("no candidates means no vetting call at all")

@@ -34,7 +34,8 @@ def _run(d, s):
 
     async def emit(e):
         events.append(e)
-    return asyncio.run(A._clear_photo(d, s, emit)), events
+    asyncio.run(A._clear_photos(d, s, emit))
+    return (d / "image.jpg").read_bytes(), events
 
 
 def test_hand_is_removed_once_and_the_original_kept(tmp_path, monkeypatch):
@@ -97,3 +98,27 @@ def test_built_sessions_are_left_alone(tmp_path, monkeypatch):
 
 def test_hand_threshold():
     assert clean.MIN_HAND_AREA * 640 * 480 > 20 * 20
+
+
+def test_extra_photos_are_cleared_too(tmp_path, monkeypatch):
+    d, s, photo = _session(tmp_path, monkeypatch)
+    held, free = _jpeg((90, 90, 90)), _jpeg((30, 30, 30))
+    (d / "extra-1.jpg").write_bytes(held)
+    (d / "extra-2.jpg").write_bytes(free)
+
+    async def fake_segment(image, phrase):
+        # Only the first extra photo has a hand on the object.
+        return [_match([300, 300, 600, 480])] if image == held else []
+
+    async def fake_edit(jpeg, prompt, size=None):
+        return _jpeg((10, 120, 10))
+
+    monkeypatch.setattr(meta, "segment", fake_segment)
+    monkeypatch.setattr(meta, "edit_image", fake_edit)
+    image, events = _run(d, s)
+    assert image == photo and s["cleaned"] is None and s["extras_cleaned"] == [1]
+    assert (d / "original-extra-1.jpg").read_bytes() == held and (d / "extra-2.jpg").read_bytes() == free
+    assert not (d / "original-extra-2.jpg").exists()
+    # Kept originals are not mistaken for extra photos.
+    assert [p.name for p in A._extra_photos(d)] == ["extra-1.jpg", "extra-2.jpg"]
+    assert events[-1]["text"] == "Muse Image removed the hand from 1 of 3 photos and restored what it hid"

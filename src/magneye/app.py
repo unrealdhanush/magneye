@@ -176,42 +176,57 @@ def session_original_image(sid: str) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg")
 
 
-async def _clear_photo(d: Path, s: dict[str, Any], emit: Emit) -> bytes:
-    """The photo every later step reads: the user's own, or a copy with a covering hand removed by Muse Image. Decided
-    once per session (the original kept as original.jpg) and cached by the original photo, so the same photo is
-    never edited twice. Sessions built before this step are left as they are."""
-    photo = d / "image.jpg"
-    if "cleaned" in s or (d / "anatomy.json").exists():
-        return photo.read_bytes()
+async def _clear_one(photo: Path, keep_as: Path) -> bool | None:
+    """Remove a hand covering the object from one photo, in place, keeping the original as `keep_as`. The cleaned copy
+    is cached by the original's hash, so the same photo is never edited twice. True if cleaned, False if nothing
+    covered the object, None if the check failed."""
     original = photo.read_bytes()
-    cached = DATA / "cache" / f"{s['image_sha'][:24]}.clean.jpg"
-    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "running"})
-    found: dict[str, Any] | None
+    cached = DATA / "cache" / f"{hashlib.sha256(original).hexdigest()[:24]}.clean.jpg"
     if cached.exists():
-        found = {"image": cached.read_bytes()}
+        cleaned = cached.read_bytes()
     else:
+        with Image.open(io.BytesIO(original)) as im:
+            size = im.size
         try:
-            found = await clear_hands(original, tuple(s["size"]))
-        except meta.MetaAPIError as e:
-            s["cleaned"] = None
-            _write_json(d / "session.json", s)
-            await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "error",
-                        "text": f"Couldn't check the photo for hands ({e}); using it as taken"})
-            return original
-    if found:
-        jpeg, size = _normalize_image(found["image"])
+            found = await clear_hands(original, size)
+        except meta.MetaAPIError:
+            return None
+        if not found:
+            return False
+        cleaned = found["image"]
         cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(found["image"])
-        (d / "original.jpg").write_bytes(original)
-        photo.write_bytes(jpeg)
-        s.update(cleaned={"by": "muse-image-1.0", "removed": "hand"}, size=list(size))
-        text = "Muse Image removed the hand covering the object and restored the part it hid"
-    else:
-        s["cleaned"] = None
-        text = "Nothing covering the object"
+        cached.write_bytes(cleaned)
+    keep_as.write_bytes(original)
+    photo.write_bytes(_normalize_image(cleaned)[0])
+    return True
+
+
+async def _clear_photos(d: Path, s: dict[str, Any], emit: Emit) -> None:
+    """Clear hands off the main photo and every extra photo, all at once, before anything reads them. Decided once per
+    session; the originals are kept (original.jpg, original-extra-N.jpg). Sessions built before this step are left
+    as they are."""
+    if "cleaned" in s or (d / "anatomy.json").exists():
+        return
+    photos = [(d / "image.jpg", d / "original.jpg")] + [(p, d / f"original-{p.name}") for p in _extra_photos(d)]
+    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "running"})
+    results = await asyncio.gather(*(_clear_one(photo, keep) for photo, keep in photos))
+    cleaned, failed = sum(r is True for r in results), sum(r is None for r in results)
+    s["cleaned"] = {"by": "muse-image-1.0", "removed": "hand"} if results[0] else None
+    s["extras_cleaned"] = [n for n, r in enumerate(results[1:], 1) if r]
+    if results[0]:
+        with Image.open(d / "image.jpg") as im:
+            s["size"] = list(im.size)
     _write_json(d / "session.json", s)
-    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "done", "text": text})
-    return photo.read_bytes()
+    if len(photos) == 1:
+        text = ("Muse Image removed the hand covering the object and restored the part it hid" if cleaned
+                else "Nothing covering the object")
+    else:
+        text = (f"Muse Image removed the hand from {cleaned} of {len(photos)} photos and restored what it hid" if cleaned
+                else "Nothing covering the object in any photo")
+    if failed:
+        text += f"; couldn't check {failed} (used as taken)"
+    await emit({"type": "step", "agent": "builder", "tool": "clean_photo", "status": "error" if failed == len(photos) else "done",
+                "text": text})
 
 
 @app.post("/api/sessions/{sid}/build")
@@ -220,10 +235,11 @@ async def build_session(sid: str) -> StreamingResponse:
     look at its own layout; finally SAM 3.1 grounds the visible parts for the viewer."""
     d = _session_dir(sid)
     s = _read_json(d / "session.json")
-    own = [p.read_bytes() for p in _extra_photos(d)]
 
     async def work(emit: Emit) -> None:
-        image = await _clear_photo(d, s, emit)
+        await _clear_photos(d, s, emit)
+        image = (d / "image.jpg").read_bytes()
+        own = [p.read_bytes() for p in _extra_photos(d)]
         cache = SegmentCache(image)
         anatomy = _read_json(d / "anatomy.json")
         # Same photos + same prompt -> reuse the earlier grounded anatomy (keeps demos fast and cheap).

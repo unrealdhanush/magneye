@@ -34,6 +34,9 @@ MAX_COMMONS = 6
 PER_PAGE = 4
 MAX_VIEWS = 3
 MAX_TOTAL = 6
+# One vetting call sees at most this many photos (the user's own plus found ones), at least MIN_FOUND found ones.
+MAX_VETTED = 14
+MIN_FOUND = 4
 VIEWS = ["front", "back", "left", "right", "top", "bottom", "three_quarter", "detail", "other"]
 # Views that add something the front photo cannot show, best first.
 USEFUL = ["left", "right", "back", "top", "bottom", "three_quarter"]
@@ -202,17 +205,25 @@ async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]]
                own: Sequence[bytes] = ()) -> dict[str, Any]:
     """Vetted reference views: {"views": [...with jpeg...], "considered": n}. More photos the user took (`own`)
     are vetted first and come before any photo found online."""
-    found = await candidates(query, sources) if query or sources else []
     mine = [{"origin": "user", "own": n, "title": f"Your photo {n + 2}", "page_url": None, "image_url": None, "jpeg": jpeg}
             for n, jpeg in enumerate(_normalize(raw) for raw in own) if jpeg]
-    cands = mine + found
+    found = await candidates(query, sources) if query or sources else []
+    # The user's photos come first; found ones fill the rest of one vetting call, with a few always allowed in.
+    cands = mine + found[:max(MIN_FOUND, MAX_VETTED - len(mine))]
     if not cands:
         return {"views": [], "considered": 0}
-    verdict = await meta.chat_json(
-        model=model, system=VET_SYSTEM, image_jpeg=image, more_images=[c["jpeg"] for c in cands],
-        user_text=f"Vet candidates 1 to {len(cands)}.", schema_name="vetting", schema=VET_SCHEMA,
-        reasoning_effort="low", max_tokens=3000,
-    )
+    try:
+        verdict = await meta.chat_json(
+            model=model, system=VET_SYSTEM, image_jpeg=image, more_images=[c["jpeg"] for c in cands],
+            user_text=f"Vet candidates 1 to {len(cands)}.", schema_name="vetting", schema=VET_SCHEMA,
+            reasoning_effort="low", max_tokens=8000,
+        )
+    except meta.MetaAPIError:
+        if not mine:
+            raise
+        # The user took these on purpose, so they still go to the draft unvetted; found photos are dropped.
+        unvetted = [{**c, "view": "other_angle", "note": "", "clean": False, "upright": False} for c in mine]
+        return {"views": unvetted[:MAX_TOTAL], "considered": len(cands), "unvetted": True}
     return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
 
 

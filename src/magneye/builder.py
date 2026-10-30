@@ -71,6 +71,10 @@ async def _views(*, image: bytes, own: list[bytes], query: str | None, sources: 
                     "text": f"Reference photos unavailable ({e}); building from the one photo"})
         return []
     picked = found["views"]
+    if found.get("unvetted"):
+        await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
+                    "text": f"Couldn't check the photos; using your {_count(len(picked), 'photo', 'photos')} as they are"})
+        return picked
     where = list(dict.fromkeys({"commons": "Wikimedia Commons", "user": "your photos"}.get(v["origin"]) or _host(v["page_url"])
                                for v in picked))
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "done",
