@@ -85,6 +85,11 @@ def test_builder_verifies_and_edits(monkeypatch):
                                        _call("update_parts", {"updates": [{"id": "stick", "reason": "SAM position", "center_mm": [0, 20, 20]}]}, 1)]},
         {"content": "", "tool_calls": [_call("finish", {"summary": "Verified against the photo"})]},
     ])
+    async def fake_research(**_):
+        return {"text": "Teardown notes: potentiometer stick module under the faceplate.",
+                "sources": [{"url": "https://www.ifixit.com/Teardown/x", "title": "Teardown"}], "searches": ["controller teardown"]}
+
+    monkeypatch.setattr(meta, "research", fake_research)
     monkeypatch.setattr(meta, "chat_json", fake_draft)
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
@@ -94,6 +99,8 @@ def test_builder_verifies_and_edits(monkeypatch):
     result = asyncio.run(builder.build(image=photo, prompt="", emit=emit, model="m", reasoning="low", cache=SegmentCache(photo)))
 
     assert [p["id"] for p in result["parts"]] == ["shell", "stick", "pots", "battery"]
+    assert result["research"]["sources"][0]["url"] == "https://www.ifixit.com/Teardown/x"
+    assert any(e.get("tool") == "research" and e.get("text", "").startswith("1 search, 1 source cited (ifixit.com)") for e in events)
     assert next(p for p in result["parts"] if p["id"] == "stick")["center_mm"] == [0, 20, 20]
     texts = [e.get("text", "") for e in events if e["type"] == "step"]
     assert "SAM 3.1: 1 × “thumbstick”" in texts and "SAM 3.1: no “red button” on the object" in texts

@@ -9,6 +9,7 @@ import { IconArrow, IconCheck, IconMic, IconPlay, IconStop, IconWarn } from './i
 export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'done' | 'error'; text?: string }
 
 const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }> = {
+  research: { label: 'Research teardowns', model: 'Wonder · web', orb: 'searching' },
   draft: { label: 'Draft anatomy', model: 'Muse Wonder', orb: 'solving' },
   cache: { label: 'Reuse anatomy', model: 'cache', orb: 'working' },
   find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },
@@ -127,6 +128,7 @@ export function ObjectCard({ anatomy }: { anatomy: Anatomy }) {
         <div className="rounded-sm bg-ink/5 p-1"><dt className="text-muted">Identification</dt><dd className="tabular text-ink">{pct}%</dd></div>
         <div className="rounded-sm bg-ink/5 p-1"><dt className="text-muted">Size (mm)</dt><dd className="tabular text-ink">{o.dimensions_mm.map(Math.round).join(' × ')}</dd></div>
       </dl>
+      <Provenance anatomy={anatomy} />
       {o.evidence.length > 0 && (
         <details className="text-footnote text-muted">
           <summary className="cursor-pointer text-ink">Why Magneye thinks so</summary>
@@ -134,6 +136,38 @@ export function ObjectCard({ anatomy }: { anatomy: Anatomy }) {
         </details>
       )}
     </section>
+  )
+}
+
+const BASIS: Record<'seen' | 'documented' | 'inferred', { label: string; tone: string }> = {
+  seen: { label: 'seen in photo', tone: 'bg-teal/10 text-teal-text' },
+  documented: { label: 'documented', tone: 'bg-indigo/10 text-indigo-text' },
+  inferred: { label: 'inferred', tone: 'bg-ink/5 text-muted' },
+}
+
+/** How much of the anatomy is seen, documented by cited sources, or inferred, plus the sources themselves. */
+function Provenance({ anatomy }: { anatomy: Anatomy }) {
+  const counts = { seen: 0, documented: 0, inferred: 0 }
+  for (const p of anatomy.parts) counts[p.grounded ? 'seen' : p.basis === 'documented' ? 'documented' : p.basis === 'seen' ? 'seen' : 'inferred']++
+  const sources = anatomy.research?.sources ?? []
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-1 font-mono text-caption2 leading-5">
+        {(Object.keys(counts) as (keyof typeof counts)[]).filter(k => counts[k]).map(k => (
+          <span key={k} className={`rounded-full px-1 ${BASIS[k].tone}`}><span className="tabular">{counts[k]}</span> {BASIS[k].label}</span>
+        ))}
+      </div>
+      {sources.length > 0 && (
+        <details className="text-footnote">
+          <summary className="cursor-pointer text-ink">Blueprint sources ({sources.length})</summary>
+          <ol className="mt-1 list-decimal space-y-px ps-2.5">
+            {sources.map(src => (
+              <li key={src.url}><a href={src.url} target="_blank" rel="noopener noreferrer" className="break-words">{src.title}</a></li>
+            ))}
+          </ol>
+        </details>
+      )}
+    </div>
   )
 }
 
@@ -279,8 +313,8 @@ export function PartDetail({ part, onClose }: { part: Part; onClose: () => void 
         <span className="inline-flex items-center gap-px rounded-full bg-ink/5 px-1 text-ink">
           <span className="me-px inline-block h-1 w-1 rounded-full" style={{ background: look.color }} aria-hidden="true" />{look.label}
         </span>
-        <span className={`rounded-full px-1 ${part.grounded ? 'bg-teal/10 text-teal-text' : 'bg-ink/5 text-muted'}`}>
-          {part.grounded ? 'Seen in photo · SAM 3.1' : part.kind === 'internal' ? 'Hidden · inferred' : 'Not visible in photo'}
+        <span className={`rounded-full px-1 ${part.grounded ? 'bg-teal/10 text-teal-text' : part.basis === 'documented' ? 'bg-indigo/10 text-indigo-text' : 'bg-ink/5 text-muted'}`}>
+          {part.grounded ? 'Seen in photo · SAM 3.1' : part.basis === 'documented' ? 'Documented · cited sources' : part.kind === 'internal' ? 'Hidden · inferred' : 'Not visible in photo'}
         </span>
         <span className="tabular rounded-full bg-ink/5 px-1 text-ink">{Math.round(part.confidence * 100)}% sure</span>
       </div>

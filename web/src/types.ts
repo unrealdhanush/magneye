@@ -2,7 +2,7 @@ export type Vec3 = [number, number, number]
 
 export type Material =
   | 'plastic' | 'metal' | 'pcb' | 'battery' | 'rubber' | 'glass' | 'magnet' | 'fabric' | 'fluid' | 'organic' | 'ceramic' | 'other'
-export type Shape = 'box' | 'rounded_box' | 'cylinder' | 'sphere' | 'capsule' | 'disc' | 'ring' | 'cone' | 'plate' | 'coil'
+export type Shape = 'box' | 'rounded_box' | 'cylinder' | 'sphere' | 'capsule' | 'disc' | 'ring' | 'cone' | 'plate' | 'coil' | 'gear' | 'spiral'
 export type Effect = 'press' | 'rotate' | 'slide' | 'vibrate' | 'glow' | 'flow' | 'heat' | 'light'
 
 /** One primitive of a part drawn as several shapes; offset is from the part's centre. */
@@ -27,6 +27,8 @@ export interface Part {
   layer: number
   sam_prompt: string | null
   confidence: number
+  /** Where knowledge of the part comes from: the photo, cited research, or the model's reasoning. */
+  basis?: 'seen' | 'documented' | 'inferred'
   components?: Component[]
   grounded?: boolean
 }
@@ -64,6 +66,7 @@ export interface Anatomy {
   scenarios: Scenario[]
   failures: Failure[]
   caveats: string[]
+  research?: { notes: string; sources: { url: string; title: string }[]; searches: string[] }
 }
 
 export interface MaskMatch {

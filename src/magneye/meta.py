@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import os
 from typing import Any
 
@@ -110,6 +111,57 @@ async def chat(
         raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
     USAGE.append({"model": model, **(r.json().get("usage") or {})})
     return r.json()["choices"][0]["message"]
+
+
+async def research(*, model: str, image_jpeg: bytes, instructions: str, question: str,
+                   reasoning_effort: str = "low") -> dict[str, Any]:
+    """One Responses API call with Meta's web_search grounding. Returns the cited text, the sources it cited and
+    the searches it ran."""
+    body = {
+        "model": model,
+        "instructions": instructions,
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_image", "image_url": data_url(image_jpeg)},
+            {"type": "input_text", "text": question},
+        ]}],
+        "tools": [{"type": "web_search", "search_context_size": "low"}],
+        "include": ["web_search_call.results"],
+        "reasoning": {"effort": reasoning_effort},
+    }
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.post(f"{BASE_URL}/responses", headers=_headers(), json=body)
+    if r.status_code >= 400:
+        raise MetaAPIError(f"responses {r.status_code}: {r.text[:500]}")
+    data = r.json()
+    usage = data.get("usage") or {}
+    USAGE.append({"model": model, "prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens")})
+    texts, sources, searches, hits = [], {}, [], {}
+    for item in data.get("output", []):
+        if item.get("type") == "web_search_call":
+            query = (item.get("action") or {}).get("query")
+            if query:
+                searches.append(query)
+            for hit in item.get("results") or []:
+                if hit.get("url"):
+                    hits.setdefault(hit["url"], hit.get("title") or hit["url"])
+        elif item.get("type") == "message":
+            for part in item.get("content", []):
+                if part.get("type") != "output_text":
+                    continue
+                texts.append(part.get("text", ""))
+                for a in part.get("annotations", []):
+                    if a.get("type") == "url_citation" and a.get("url"):
+                        sources.setdefault(a["url"], a.get("title") or a["url"])
+    # The final message is the brief; earlier messages are progress notes between searches.
+    brief = texts[-1] if texts else ""
+    # Sources, best first: inline citations, then the brief's own "Sources" list (only URLs the search actually
+    # returned, so a hallucinated link can't slip in), then the raw search hits.
+    for title, url in re.findall(r"^\s*\d+\.\s*(.+?)\s+[—–-]\s+(https?://\S+?)[).,]?\s*$", brief, re.M):
+        if url in hits:
+            sources.setdefault(url, title.strip("*[] "))
+    if not sources:
+        sources = dict(list(hits.items())[:8])
+    return {"text": brief, "sources": [{"url": u, "title": t} for u, t in sources.items()], "searches": searches}
 
 
 async def segment(image_jpeg: bytes, phrase: str) -> list[dict[str, Any]]:

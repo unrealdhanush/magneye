@@ -64,7 +64,8 @@ export function partShape(part: Pick<Part, 'shape' | 'size_mm'>, s: number): Par
     default:
       break
   }
-  const axis = roundAxis(size, part.shape === 'disc' || part.shape === 'ring' ? 'smallest' : 'unique')
+  const flat = part.shape === 'disc' || part.shape === 'ring' || part.shape === 'gear' || part.shape === 'spiral'
+  const axis = roundAxis(size, flat ? 'smallest' : 'unique')
   const len = size[axis]
   const radial = size.filter((_, i) => i !== axis) as [number, number]
   const diameter = (radial[0] + radial[1]) / 2
@@ -74,6 +75,11 @@ export function partShape(part: Pick<Part, 'shape' | 'size_mm'>, s: number): Par
     case 'cylinder':
     case 'disc':
       return { geometry: shared('cyl', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 40)), scale: [radial[0], len, radial[1]], axis: AXIS_ROT[axis] }
+    case 'gear':
+      return { geometry: shared('gear', () => gear()), scale: [radial[0], len, radial[1]], axis: AXIS_ROT[axis] }
+    case 'spiral':
+      // The spring's wire stays thin; only its footprint follows the part's size.
+      return { geometry: shared('spiral', () => spiral()), scale: [radial[0], 1, radial[1]], axis: AXIS_ROT[axis] }
     case 'cone':
       return { geometry: shared('cone', () => new THREE.ConeGeometry(0.5, 1, 40)), scale: [radial[0], len, radial[1]], axis: AXIS_ROT[axis] }
     case 'capsule': {
@@ -93,6 +99,34 @@ export function partShape(part: Pick<Part, 'shape' | 'size_mm'>, s: number): Par
     default:
       return { geometry: shared('box', () => new THREE.BoxGeometry(1, 1, 1)), scale: size, axis: ident }
   }
+}
+
+/** A unit-diameter spur gear, axis along Y, unit thickness. */
+function gear(teeth = 18) {
+  const shape = new THREE.Shape()
+  const rOut = 0.5, rIn = 0.42, step = (Math.PI * 2) / teeth
+  for (let i = 0; i < teeth; i++) {
+    const a = i * step
+    const pts: [number, number][] = [[rIn, a], [rOut, a + step * 0.15], [rOut, a + step * 0.45], [rIn, a + step * 0.6]]
+    pts.forEach(([r, t], k) => (i === 0 && k === 0 ? shape.moveTo : shape.lineTo).call(shape, Math.cos(t) * r, Math.sin(t) * r))
+  }
+  shape.closePath()
+  const hub = new THREE.Path()
+  hub.absarc(0, 0, 0.08, 0, Math.PI * 2, true)
+  shape.holes.push(hub)
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 1, bevelEnabled: false, curveSegments: 4 })
+  g.translate(0, 0, -0.5)
+  g.rotateX(Math.PI / 2)
+  return g
+}
+
+/** A unit-diameter flat spiral spring (hairspring, mainspring), axis along Y. */
+function spiral(turns = 7) {
+  const pts = Array.from({ length: turns * 48 + 1 }, (_, i) => {
+    const t = i / (turns * 48), a = t * turns * Math.PI * 2, r = 0.06 + t * 0.44
+    return new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r)
+  })
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), turns * 64, 0.012, 6, false)
 }
 
 function roundedBox() {

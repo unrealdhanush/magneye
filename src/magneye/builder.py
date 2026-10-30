@@ -37,14 +37,43 @@ def _brief(anatomy: dict[str, Any]) -> str:
                        "failures": [{k: f[k] for k in ("id", "culprit_part_id", "access_path")} for f in anatomy["failures"]]})
 
 
+async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dict[str, Any] | None:
+    """Search the web for teardowns and specs of the object in the photo; None if research is unavailable."""
+    await emit({"type": "step", "agent": "builder", "tool": "research", "status": "running"})
+    try:
+        found = await meta.research(model=model, image_jpeg=image, instructions=A.RESEARCH_SYSTEM,
+                                    question=A.research_question(prompt))
+    except meta.MetaAPIError as e:
+        await emit({"type": "step", "agent": "builder", "tool": "research", "status": "error",
+                    "text": f"Web research unavailable ({e}); drafting from the model's own knowledge"})
+        return None
+    hosts = list(dict.fromkeys(_host(s["url"]) for s in found["sources"]))
+    await emit({"type": "step", "agent": "builder", "tool": "research", "status": "done",
+                "text": f"{_count(len(found['searches']), 'search', 'searches')}, {_count(len(found['sources']), 'source', 'sources')} cited"
+                        + (f" ({', '.join(hosts[:4])})" if hosts else "")})
+    return found if found["text"] else None
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _host(url: str) -> str:
+    return url.split("//", 1)[-1].split("/", 1)[0].removeprefix("www.")
+
+
 async def build(
     *, image: bytes, prompt: str, emit: Emit, model: str, reasoning: str, cache: SegmentCache, max_turns: int = 6,
 ) -> dict[str, Any]:
+    research = await _research(image=image, prompt=prompt, emit=emit, model=model)
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
-        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt), image_jpeg=image,
-        schema_name="anatomy", schema=A.ANATOMY_SCHEMA, reasoning_effort=reasoning, max_tokens=24000,
+        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"]),
+        image_jpeg=image, schema_name="anatomy", schema=A.ANATOMY_SCHEMA, reasoning_effort=reasoning, max_tokens=24000,
     ))
+    if research:
+        # Kept with the anatomy so the guide can answer from the same references and the UI can cite them.
+        draft["research"] = {"notes": research["text"][:6000], "sources": research["sources"][:12], "searches": research["searches"]}
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "done",
                 "text": f"Drafted {draft['object']['name']} with {len(draft['parts'])} parts"})
     await emit({"type": "anatomy", "anatomy": draft})

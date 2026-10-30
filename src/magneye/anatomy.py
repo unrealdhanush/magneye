@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 MATERIALS = ["plastic", "metal", "pcb", "battery", "rubber", "glass", "magnet", "fabric", "fluid", "organic", "ceramic", "other"]
-SHAPES = ["box", "rounded_box", "cylinder", "sphere", "capsule", "disc", "ring", "cone", "plate", "coil"]
+SHAPES = ["box", "rounded_box", "cylinder", "sphere", "capsule", "disc", "ring", "cone", "plate", "coil", "gear", "spiral"]
+BASIS = ["seen", "documented", "inferred"]
 LINKS = ["mechanical", "electrical", "signal", "fluid", "optical", "thermal", "magnetic", "air"]
 EFFECTS = ["press", "rotate", "slide", "vibrate", "glow", "flow", "heat", "light"]
 
@@ -94,6 +95,7 @@ ANATOMY_SCHEMA = _obj(
                     "layer": {"type": "integer"},
                     "sam_prompt": {"type": ["string", "null"]},
                     "confidence": {"type": "number"},
+                    "basis": {"type": "string", "enum": BASIS},
                     "components": {"type": "array", "items": COMPONENT, "maxItems": MAX_COMPONENTS},
                 }
             ),
@@ -119,6 +121,8 @@ Parts:
 - sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "thumbstick", "button", "strap", "lens"; bad: "Oculus menu button", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.
 - object.sam_prompt: the generic everyday noun for the whole object, 1 or 2 words, never a brand (good: "game controller", "camera", "kettle"; bad: "Oculus Touch VR controller").
 - components: how the part looks, as 2 to 5 primitives, so the 3D view reads as the real thing rather than one block. offset_mm is each primitive's centre relative to the part's centre, in the same axes; together they should fill the part's size_mm. Examples: thumbstick module = metal housing box + cylinder shaft + two small cylinder potentiometer drums on adjacent sides; circuit board = thin pcb plate + a few small box chips + a connector; battery = cylinder body + small metal disc terminal; trigger = curved capsule blade + small cylinder pivot. Use [] for parts that really are one simple shape (a cover, a ring, a button cap).
+- basis: where your knowledge of this part comes from. "seen" = visible in the photo; "documented" = described in the reference research below (teardown, service notes, specs); "inferred" = neither, reasoned from how such objects are usually built.
+- Shapes "gear" (a toothed wheel; size_mm is diameter, diameter, thickness) and "spiral" (a flat spiral spring such as a hairspring or mainspring) exist for mechanisms; use them instead of discs where they apply.
 - confidence (0 to 1) is how sure you are this part exists as described in this specific model. Use well-known teardown knowledge when you recognise the exact product; otherwise infer from the category and say so in caveats.
 
 Connections link parts that physically or electrically interact (kind is one of {LINKS}).
@@ -129,8 +133,31 @@ Failures (2 to 5): realistic failure modes for this exact kind of object. culpri
 
 Be honest: do not invent precise specs you do not know. Put uncertainty in caveats. Output only JSON matching the schema."""
 
-def anatomy_user_text(prompt: str) -> str:
-    return f"User prompt: {prompt.strip() or 'Show me how this works.'}\n\nReconstruct this object's anatomy."
+RESEARCH_SYSTEM = """You research real objects for Magneye, which builds interactive 3D exploded views. Identify the exact object in the photo (maker, model, generation or reference number when visible), then search the web for its teardowns, exploded views, service or repair guides, and official specifications.
+
+Write a blueprint brief a 3D modeller could build from:
+1. Identification and how sure you are.
+2. Overall dimensions (and which part of the object they cover).
+3. Internal components, in assembly order from the front (the side facing the camera) to the back, each with approximate size in mm, material, and where it sits.
+4. How the main mechanisms work, step by step.
+5. Disassembly order, and common failures with their root causes.
+
+Prefer teardowns and service documentation over listings and marketing. If documentation exists only for a closely related model, use it and say which. Mark anything you could not find a source for as unverified. Keep it under 900 words.
+
+Budget: run at most 6 searches, the most targeted first (teardown or exploded view, then specifications, then common failures).
+
+End with a "Sources" section: a numbered list of the pages you actually used, one per line as "N. Title — URL"."""
+
+
+def research_question(prompt: str) -> str:
+    return f"User prompt: {prompt.strip() or 'Show me how this works.'}\n\nResearch the object in this photo and write the blueprint brief."
+
+
+def anatomy_user_text(prompt: str, brief: str | None = None) -> str:
+    reference = (f"\n\nReference research from the web (teardowns, service notes, specs). Prefer it over memory for internal "
+                 f"layout, sizes and failure modes, and mark parts it describes as basis \"documented\":\n<research>\n{brief}\n</research>"
+                 if brief else "")
+    return f"User prompt: {prompt.strip() or 'Show me how this works.'}{reference}\n\nReconstruct this object's anatomy."
 
 
 def sanitize(anatomy: dict[str, Any]) -> dict[str, Any]:
