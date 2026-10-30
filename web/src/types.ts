@@ -31,6 +31,8 @@ export interface Part {
   basis?: 'seen' | 'documented' | 'inferred'
   components?: Component[]
   grounded?: boolean
+  /** Changed by the user in the blueprint, or by the guide at their request. */
+  edited?: boolean
 }
 
 export interface Connection { from: string; to: string; kind: string; label: string }
@@ -68,6 +70,8 @@ export interface Anatomy {
   scenarios: Scenario[]
   failures: Failure[]
   caveats: string[]
+  /** Bumped on every edit after the build. */
+  revision?: number
   research?: { notes: string; sources: { url: string; title: string }[]; searches: string[] }
   /** Photos of the same product from other angles that the draft saw. Commons photos carry an image and licence. */
   references?: Reference[]

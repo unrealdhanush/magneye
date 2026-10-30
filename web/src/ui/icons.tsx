@@ -45,3 +45,6 @@ export const IconReset = (p: SVGProps<SVGSVGElement>) => (
 export const IconChevron = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>
 )
+export const IconPlus = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>
+)

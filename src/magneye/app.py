@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
+from . import anatomy as A
 from . import guide, meta
 from .agent import Emit
 from .builder import build
@@ -286,6 +287,33 @@ class Ask(BaseModel):
     prompt: str
 
 
+REQUIRED_PART_KEYS = {"id", "name", "kind", "material", "shape", "size_mm", "center_mm", "rotation_deg", "layer"}
+
+
+@app.put("/api/sessions/{sid}/anatomy")
+def save_anatomy(sid: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Save the user's edits from the blueprint. References to removed parts are dropped (scenario steps, failures,
+    connections, grounding), and the revision moves on so the guide hears about the change."""
+    d = _session_dir(sid)
+    current = _read_json(d / "anatomy.json")
+    if current is None:
+        raise HTTPException(409, "build the anatomy first")
+    parts = body.get("parts")
+    if not isinstance(parts, list) or not all(isinstance(p, dict) and REQUIRED_PART_KEYS <= p.keys() for p in parts):
+        raise HTTPException(400, f"every part needs {sorted(REQUIRED_PART_KEYS)}")
+    if len({p["id"] for p in parts}) != len(parts):
+        raise HTTPException(400, "part ids must be unique")
+    anatomy = A.sanitize({**current, **{k: v for k, v in body.items() if k in ("parts", "scenarios", "failures", "connections")}})
+    anatomy["revision"] = current.get("revision", 0) + 1
+    _write_json(d / "anatomy.json", anatomy)
+    g = _read_json(d / "ground.json")
+    if g:
+        ids = {p["id"] for p in parts}
+        g["parts"] = {k: v for k, v in g["parts"].items() if k in ids}
+        _write_json(d / "ground.json", g)
+    return anatomy
+
+
 @app.post("/api/sessions/{sid}/ask")
 async def ask(sid: str, body: Ask) -> StreamingResponse:
     """Guide agent: answers by driving the viewer, looking closer at the photo, or asking a question first."""
@@ -296,15 +324,23 @@ async def ask(sid: str, body: Ask) -> StreamingResponse:
     image = (d / "image.jpg").read_bytes()
     messages = _read_json(d / "guide.json") or guide.opening_messages(anatomy, image)
 
+    # When the model was edited since the guide last spoke, tell it what the parts are now.
+    told = (_read_json(d / "guide_revision.json") or {}).get("revision", 0)
+    prompt = body.prompt
+    if anatomy.get("revision", 0) != told:
+        current = [{"id": p["id"], "name": p["name"], "center_mm": p["center_mm"], "size_mm": p["size_mm"]} for p in anatomy["parts"]]
+        prompt = f"(The model was edited since you last looked. Current parts: {json.dumps(current)})\n\n{body.prompt}"
+
     async def work(emit: Emit) -> None:
         await emit({"type": "user", "text": body.prompt})
         try:
-            await guide.respond(anatomy=anatomy, messages=messages, prompt=body.prompt, image=image,
+            await guide.respond(anatomy=anatomy, messages=messages, prompt=prompt, image=image,
                                 cache=SegmentCache(image), emit=emit, model=MODEL, ground=_read_json(d / "ground.json"))
         finally:
             # Scenarios/failures the guide created become part of the object for the rest of the session.
             _write_json(d / "anatomy.json", anatomy)
             _write_json(d / "guide.json", messages)
+            _write_json(d / "guide_revision.json", {"revision": anatomy.get("revision", 0)})
         await emit({"type": "anatomy", "anatomy": anatomy})
         await emit({"type": "done"})
 

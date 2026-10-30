@@ -3,9 +3,11 @@ import { api } from './api'
 import { ThemeToggle } from './theme'
 import type { Agent, AgentEvent, Anatomy, Failure, Ground, Playback, Scenario, Session, ViewerAction } from './types'
 import { FittedBlueprint } from './blueprint/Blueprint'
+import { Inspector } from './blueprint/Inspector'
+import { useAnatomyEditor } from './blueprint/useEditor'
 import { SpaceTabs, type Space } from './blueprint/SpaceTabs'
 import { StartScreen } from './ui/StartScreen'
-import { IconLayers, IconReset, IconXray } from './ui/icons'
+import { IconLayers, IconPlus, IconReset, IconXray } from './ui/icons'
 import {
   AgentTrace, AskBar, Conversation, FailureList, ObjectCard, PartDetail, PhotoMasks, ScenarioList,
   type TraceStep, type Turn,
@@ -94,6 +96,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const started = useRef(false)
   // Latest anatomy/ground as streamed, readable after an await without waiting for a re-render.
   const latest = useRef<{ anatomy: Anatomy | null; ground: Ground | null }>({ anatomy: null, ground: null })
+  const editor = useAnatomyEditor(sid, latest, setAnatomy)
 
   const play = (s: Scenario) => { setPlayback({ kind: 'scenario', scenario: s, startedAt: performance.now() }); setFocusIds([]) }
   const show = (f: Failure) => { setPlayback({ kind: 'failure', failure: f, startedAt: performance.now() }); setFocusIds([]); setSelectedId(null) }
@@ -124,21 +127,46 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
       case 'user': setTurns(t => [...t, { role: 'user', text: e.text }]); break
       case 'question': setThinking(null); setTurns(t => [...t, { role: 'question', text: e.text, options: e.options }]); break
       case 'answer': setThinking(null); setTurns(t => [...t, { role: 'answer', text: e.text }]); break
-      case 'anatomy': latest.current.anatomy = e.anatomy; setAnatomy(e.anatomy); break
+      case 'anatomy': {
+        // A guide edit (a new revision) can be undone like a hand edit; build drafts have no revision.
+        const prev = latest.current.anatomy
+        if (live && prev && e.anatomy.revision && e.anatomy.revision !== prev.revision) editor.recordExternal(prev)
+        latest.current.anatomy = e.anatomy
+        setAnatomy(e.anatomy)
+        break
+      }
       case 'ground': latest.current.ground = e.ground; setGround(e.ground); break
       case 'action': if (live) act(e.action); break
       case 'error': setThinking(null); setSteps(prev => [...prev, { agent: 'guide', tool: 'error', status: 'error', text: e.message }]); break
       case 'done': setThinking(null); break
     }
-  }, [act, sid])
+  }, [act, sid, editor.recordExternal])
 
   const [asking, setAsking] = useState(false)
   const ask = useCallback(async (prompt: string) => {
     setAsking(true); setThinking('guide')
+    // The guide reads the saved anatomy, so unsaved blueprint edits go first.
+    await editor.flush()
     try { await api.ask(sid, prompt, e => onEvent(e)) }
     catch (err) { onEvent({ type: 'error', message: message(err) }) }
     setAsking(false); setThinking(null)
-  }, [sid, onEvent])
+  }, [sid, onEvent, editor.flush])
+
+  // Editing shortcuts in the Blueprint: undo, redo, and delete the selected part (not while typing in a field).
+  useEffect(() => {
+    if (space !== 'blueprint') return
+    const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable]')
+      if (typing) return
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) editor.redo(); else editor.undo() }
+      else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); editor.redo() }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) { e.preventDefault(); editor.deletePart(selectedId); setSelectedId(null) }
+      else if (e.key === 'Escape') setSelectedId(null)
+    }
+    addEventListener('keydown', onKey)
+    return () => removeEventListener('keydown', onKey)
+  }, [space, selectedId, editor])
 
   // Load the session, replay its saved trace, then run whatever the agents have not done yet.
   useEffect(() => {
@@ -233,7 +261,28 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
           <div id="space-blueprint" role="tabpanel" aria-labelledby="tab-blueprint" aria-hidden={space !== 'blueprint'}
             className={`blueprint-layer absolute inset-0 bg-[#153e78] p-1 pt-8 ${space === 'blueprint' ? 'is-active' : ''}`}>
             {/* Keyed by visit, so the sheet draws itself again each time the space opens. */}
-            {visits > 0 && <FittedBlueprint key={visits} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} sessionId={sid} />}
+            {visits > 0 && <FittedBlueprint key={visits} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} sessionId={sid}
+              onMove={editor.movePart} />}
+            {selected && space === 'blueprint' && (
+              <div className="absolute inset-x-1 bottom-[72px] max-h-[60%] overflow-y-auto sm:inset-x-auto sm:bottom-auto sm:right-2 sm:top-[72px] sm:max-h-[calc(100%-160px)]">
+                <Inspector part={selected} onEdit={editor.editPart} onClose={() => setSelectedId(null)}
+                  onDuplicate={() => setSelectedId(editor.duplicatePart(selected.id))}
+                  onDelete={() => { editor.deletePart(selected.id); setSelectedId(null) }} />
+              </div>
+            )}
+            <div className="glass absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-lg p-1">
+              <button type="button" onClick={() => setSelectedId(editor.addPart(selected))}
+                className="press inline-flex min-h-tap items-center gap-1 rounded-sm bg-accent-fill px-1.5 text-subheadline text-white hover:bg-accent-strong">
+                <IconPlus className="h-2.5 w-2.5" /> Add part
+              </button>
+              <button type="button" onClick={editor.undo} disabled={!editor.canUndo} title="Undo (⌘Z)"
+                className="press inline-flex min-h-tap items-center rounded-sm px-1.5 text-subheadline text-ink hover:bg-ink/5 disabled:opacity-40">Undo</button>
+              <button type="button" onClick={editor.redo} disabled={!editor.canRedo} title="Redo (⇧⌘Z)"
+                className="press inline-flex min-h-tap items-center rounded-sm px-1.5 text-subheadline text-ink hover:bg-ink/5 disabled:opacity-40">Redo</button>
+              <span role="status" className="min-w-[64px] px-1 font-mono text-caption text-muted">
+                {{ idle: '', saving: 'Saving…', saved: 'Saved', error: 'Not saved' }[editor.saving]}
+              </span>
+            </div>
           </div>
         )}
         {anatomy && (

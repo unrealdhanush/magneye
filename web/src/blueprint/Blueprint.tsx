@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { Anatomy, Part } from '../types'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import type { Anatomy, Part, Vec3 } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
 import { extent, glyphs, pieces, VIEWS, type Glyph, type View, type ViewName } from './draw'
 
@@ -16,7 +16,7 @@ export const PORTRAIT: Sheet = {
   w: 1000, h: 1600,
   area: { x0: 48, x1: 952, y0: 64, y1: 860 }, list: { x0: 56, x1: 944, y0: 896, y1: 1404 }, title: { x0: 48, x1: 952, y0: 1420, y1: 1552 },
 }
-const BASIS_LABEL = { seen: 'Seen', documented: 'Documented', inferred: 'Inferred' } as const
+const BASIS_LABEL = { seen: 'Seen', documented: 'Documented', inferred: 'Inferred', edited: 'Edited' } as const
 
 const fmt = (mm: number) => (mm < 10 ? mm.toFixed(1) : String(Math.round(mm)))
 const delay = (s: number) => ({ '--d': `${s.toFixed(2)}s` }) as CSSProperties
@@ -66,12 +66,53 @@ function Shape({ g, draw, className, style }: { g: Glyph; draw: boolean; classNa
  * centre lines), overall dimensions, a numbered balloon per part, the parts list and a title block. Hovering or
  * picking a part highlights it in every view and the list; the selection is shared with the 3D space.
  */
-export function Blueprint({ anatomy, selectedId, onSelect, sessionId, sheet = LANDSCAPE }: {
+export function Blueprint({ anatomy, selectedId, onSelect, onMove, sessionId, sheet = LANDSCAPE }: {
   anatomy: Anatomy; selectedId: string | null; onSelect: (id: string | null) => void; sessionId: string; sheet?: Sheet
+  /** Drag a selected part in any view to move it; `key` groups one drag into a single undo step. */
+  onMove?: (id: string, center: Vec3, key: string) => void
 }) {
   const [hovered, setHovered] = useState<string | null>(null)
   const { area: AREA, list: LIST, title: TITLE } = sheet
-  const { k, W, H, D, views } = useMemo(() => layout(anatomy, sheet.area), [anatomy, sheet])
+  const computed = useMemo(() => layout(anatomy, sheet.area), [anatomy, sheet])
+  // While dragging, the drawing keeps its scale and placement so the sheet doesn't shift under the pointer.
+  const svg = useRef<SVGSVGElement>(null)
+  const drag = useRef<{ id: string; view: View; from: [number, number]; start: Vec3; frozen: typeof computed; moved: boolean; key: string } | null>(null)
+  const [, setDragging] = useState(false)
+  const { k, W, H, D, views } = drag.current?.frozen ?? computed
+  const toSheet = (e: { clientX: number; clientY: number }): [number, number] => {
+    const el = svg.current!, pt = el.createSVGPoint()
+    pt.x = e.clientX; pt.y = e.clientY
+    const p = pt.matrixTransform(el.getScreenCTM()!.inverse())
+    return [p.x, p.y]
+  }
+  const startDrag = (e: ReactPointerEvent, p: Part, view: View) => {
+    if (!onMove || p.id !== selectedId) return
+    e.stopPropagation()
+    svg.current?.setPointerCapture(e.pointerId)
+    drag.current = { id: p.id, view, from: toSheet(e), start: [...p.center_mm] as Vec3, frozen: computed, moved: false, key: `drag:${p.id}:${Date.now()}` }
+    setDragging(true)
+  }
+  const moveDrag = (e: ReactPointerEvent) => {
+    const d = drag.current
+    if (!d || !onMove) return
+    const [x, y] = toSheet(e)
+    const du = (x - d.from[0]) / d.frozen.k, dv = -(y - d.from[1]) / d.frozen.k
+    if (!d.moved && Math.hypot(du, dv) * d.frozen.k < 3) return
+    d.moved = true
+    const next = [...d.start] as Vec3
+    next[d.view.u.axis] = Math.round((d.start[d.view.u.axis] + du * d.view.u.sign) * 2) / 2
+    next[d.view.v.axis] = Math.round((d.start[d.view.v.axis] + dv * d.view.v.sign) * 2) / 2
+    onMove(d.id, next, d.key)
+  }
+  const endDrag = () => {
+    if (!drag.current) return
+    // A real drag swallows the click that follows it, so the part stays selected.
+    const moved = drag.current.moved
+    drag.current = null
+    setDragging(false)
+    if (moved) suppressClick.current = true
+  }
+  const suppressClick = useRef(false)
   const parts = useMemo(() => numbered(anatomy), [anatomy])
   const number = new Map(parts.map((p, i) => [p.id, i + 1]))
   const [front, , right] = views
@@ -99,8 +140,10 @@ export function Blueprint({ anatomy, selectedId, onSelect, sessionId, sheet = LA
   const titleSplit = TITLE.x0 + (TITLE.x1 - TITLE.x0) * 0.44
 
   return (
-    <svg viewBox={`0 0 ${sheet.w} ${sheet.h}`} className="blueprint h-full w-full" role="img"
+    <svg ref={svg} viewBox={`0 0 ${sheet.w} ${sheet.h}`} className={`blueprint h-full w-full ${drag.current ? 'is-dragging' : ''}`} role="img"
       aria-label={`Blueprint of ${anatomy.object.name}: front, top and right views with ${parts.length} numbered parts`}
+      onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}
+      onClickCapture={e => { if (suppressClick.current) { suppressClick.current = false; e.stopPropagation() } }}
       onClick={() => onSelect(null)}>
       <defs>
         <pattern id="bp-grid" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" className="bp-gridline" /></pattern>
@@ -118,14 +161,16 @@ export function Blueprint({ anatomy, selectedId, onSelect, sessionId, sheet = LA
         <g key={pv.view.name}>
           <line x1={pv.x0 - 10} y1={pv.y0 + pv.h / 2} x2={pv.x0 + pv.w + 10} y2={pv.y0 + pv.h / 2} className="bp-center bp-fade" style={delay(0.1)} />
           <line x1={pv.x0 + pv.w / 2} y1={pv.y0 - 10} x2={pv.x0 + pv.w / 2} y2={pv.y0 + pv.h + 10} className="bp-center bp-fade" style={delay(0.1)} />
-          {parts.map((p, pi) => {
+          {/* The selected part is drawn last, so nothing covers it and it can be dragged. */}
+          {[...parts.filter(p => p.id !== selectedId), ...parts.filter(p => p.id === selectedId)].map((p, pi) => {
             const hidden = p.kind === 'internal'
             const d = delay(0.15 + vi * 0.15 + Math.min(pi * 0.02, 0.4))
             const box = pieces(p).flatMap(pc => glyphs(pv.view, pc.shape, pc.center, pc.size, pv.toSheet, k))
             const hit = glyphs(pv.view, 'box', p.center_mm, p.size_mm, pv.toSheet, k)[0] as Extract<Glyph, { kind: 'rect' }>
             return (
-              <g key={p.id} className={`bp-part ${hidden ? 'is-hidden' : ''} ${state(p.id)}`}
+              <g key={p.id} className={`bp-part ${hidden ? 'is-hidden' : ''} ${state(p.id)} ${onMove && p.id === selectedId ? 'is-movable' : ''}`}
                 onPointerEnter={() => setHovered(p.id)} onPointerLeave={() => setHovered(h => (h === p.id ? null : h))}
+                onPointerDown={e => startDrag(e, p, pv.view)}
                 onClick={e => { e.stopPropagation(); onSelect(p.id) }}>
                 <rect x={hit.x} y={hit.y} width={hit.w} height={hit.h} className="bp-hit" />
                 {box.map((g, gi) => <Shape key={gi} g={g} draw={!hidden} className={hidden ? 'bp-line bp-fade' : 'bp-line bp-draw'} style={d} />)}
@@ -166,10 +211,10 @@ export function Blueprint({ anatomy, selectedId, onSelect, sessionId, sheet = LA
       </g>
       {parts.map((p, i) => {
         const y = LIST.y0 + 34 + (i + 1) * rowH
-        const basis = p.grounded ? 'seen' : p.basis ?? 'inferred'
+        const basis = p.edited ? 'edited' : p.grounded ? 'seen' : p.basis ?? 'inferred'
         const cell = `bp-td ${small ? 'is-small' : ''}`
         return (
-          <g key={p.id} className={`bp-row bp-fade ${state(p.id)}`} style={delay(0.6 + i * 0.02)}
+          <g key={p.id} className={`bp-row bp-fade ${state(p.id)} ${p.edited ? 'is-edited' : ''}`} style={delay(0.6 + i * 0.02)}
             onPointerEnter={() => setHovered(p.id)} onPointerLeave={() => setHovered(h => (h === p.id ? null : h))}
             onClick={e => { e.stopPropagation(); onSelect(p.id) }}>
             <rect x={LIST.x0 - 6} y={y - rowH + 6} width={LIST.x1 - LIST.x0 + 12} height={rowH} className="bp-row-bg" />
@@ -230,7 +275,10 @@ function Dimension({ x1, y1, x2, y2, offset, text, vertical }:
 }
 
 /** The sheet in whichever orientation wastes less of the space it is given, re-checked as that space resizes. */
-export function FittedBlueprint(props: { anatomy: Anatomy; selectedId: string | null; onSelect: (id: string | null) => void; sessionId: string }) {
+export function FittedBlueprint(props: {
+  anatomy: Anatomy; selectedId: string | null; onSelect: (id: string | null) => void; sessionId: string
+  onMove?: (id: string, center: Vec3, key: string) => void
+}) {
   const box = useRef<HTMLDivElement>(null)
   const [portrait, setPortrait] = useState(false)
   useEffect(() => {

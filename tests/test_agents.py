@@ -292,3 +292,25 @@ def test_vetting_failure_still_keeps_the_users_own_photos(monkeypatch):
         asyncio.run(views.find(image=_photo(), query=None, sources=[], model="m", own=[]))
     except meta.MetaAPIError:
         raise AssertionError("no candidates means no vetting call at all")
+
+
+def test_guide_edits_the_model_when_asked(monkeypatch):
+    anatomy = copy.deepcopy(ANATOMY)
+    photo = _photo()
+    script = Script([
+        {"content": "", "tool_calls": [
+            _call("add_part", {"part": {"id": "magnet", "name": "Magnet", "material": "magnet", "center_mm": [0, -20, 0], "size_mm": [8, 8, 3]}}),
+            _call("edit_parts", {"updates": [{"id": "battery", "size_mm": [14, 40, 14]}]}, 1),
+            _call("remove_part", {"id": "pots"}, 2)]},
+        {"content": "Added a magnet, shortened the battery and removed the pots."},
+    ])
+    monkeypatch.setattr(meta, "chat", script)
+    events, emit = _collect()
+    asyncio.run(guide.respond(anatomy=anatomy, messages=guide.opening_messages(anatomy, photo), prompt="add a magnet...",
+                              image=photo, cache=SegmentCache(photo), emit=emit, model="m", ground=None))
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    assert by_id["magnet"]["edited"] and by_id["magnet"]["shape"] == "box" and by_id["magnet"]["kind"] == "internal"
+    assert by_id["battery"]["size_mm"] == [14, 40, 14] and by_id["battery"]["edited"]
+    # Removing the culprit of a failure drops that failure too.
+    assert "pots" not in by_id and all(f["culprit_part_id"] != "pots" for f in anatomy["failures"])
+    assert anatomy["revision"] == 3 and any(e["type"] == "anatomy" for e in events)

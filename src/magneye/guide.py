@@ -13,6 +13,14 @@ from . import meta
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .ground import SegmentCache
 
+PART_SCHEMA = A.ANATOMY_SCHEMA["properties"]["parts"]["items"]
+PART_FIELDS = PART_SCHEMA["properties"]
+# Filled in for anything a new part leaves out, so the viewer and checks always have a complete part.
+PART_DEFAULTS: dict[str, Any] = {
+    "name": "New part", "kind": "internal", "function": "", "material": "plastic", "shape": "box", "size_mm": [10, 10, 10],
+    "center_mm": [0, 0, 0], "rotation_deg": [0, 0, 0], "layer": 1, "sam_prompt": None, "confidence": 0.5, "basis": "inferred",
+}
+
 GUIDE_SYSTEM = """You are Magneye's guide. The user is looking at an interactive 3D exploded view of the object in their photo. Its anatomy (parts, connections, scenarios, failures) is in the first message; part ids there are the only ones that exist.
 
 You act through the viewer, then explain in words:
@@ -22,6 +30,7 @@ You act through the viewer, then explain in words:
 - set_explode(amount): 0 assembled, 1 fully apart.
 - look_closer(part_id): crop the photo around a visible part for a closer look (visible wear, damage, debris).
 - ask_user(question): ask ONE short question when the answer would change your diagnosis. Your turn ends; their reply comes next.
+- edit_parts(updates) / add_part(part) / remove_part(id): change the model itself when the user asks to (add, remove, resize, move or correct a part). Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); keep new parts inside the object and give them a material and a short function. Highlight what you changed, then say what you did.
 
 For symptoms: if more than one failure plausibly fits, ask a single discriminating question first (e.g. direction, timing, what they already tried), then diagnose. Never ask more than two questions in a conversation. For "how does it work" prompts, play or create a scenario. Always finish with a short spoken-style answer (at most 70 words) unless you just asked a question. Be honest about what is inferred."""
 
@@ -113,6 +122,47 @@ async def respond(
         await emit({"type": "question", "text": q, "options": a.get("options") or []})
         return ToolResult("Question shown. Wait for the user's reply.", "Asked you a question", stop=True)
 
+    async def changed(part_ids: list[str]) -> None:
+        anatomy["revision"] = anatomy.get("revision", 0) + 1
+        await emit({"type": "anatomy", "anatomy": anatomy})
+        await emit({"type": "action", "action": {"type": "highlight", "part_ids": part_ids}})
+
+    async def edit_parts(a: dict[str, Any]) -> ToolResult:
+        done, unknown = [], []
+        for u in a.get("updates", []):
+            p = by_id.get(u.get("id", ""))
+            if p is None:
+                unknown.append(u.get("id"))
+                continue
+            p.update({k: v for k, v in u.items() if k in PART_FIELDS and k != "id"}, edited=True)
+            done.append(p["id"])
+        if done:
+            await changed(done)
+        return ToolResult(json.dumps({"updated": done, "unknown_ids": unknown}),
+                          f"Changed {', '.join(by_id[i]['name'] for i in done)}" if done else "No parts changed", ok=bool(done))
+
+    async def add_part(a: dict[str, Any]) -> ToolResult:
+        p = {**PART_DEFAULTS, **(a.get("part") or {}), "edited": True}
+        if not p.get("id") or p["id"] in by_id:
+            return ToolResult("A new part needs a fresh snake_case id.", "add_part rejected", ok=False)
+        anatomy["parts"].append(p)
+        by_id[p["id"]] = p
+        ids.add(p["id"])
+        await changed([p["id"]])
+        return ToolResult("ok", f"Added {p.get('name') or p['id']}")
+
+    async def remove_part(a: dict[str, Any]) -> ToolResult:
+        pid = a.get("id", "")
+        if pid not in by_id:
+            return ToolResult(f"No part {pid!r}.", "remove_part: unknown part", ok=False)
+        name = by_id.pop(pid)["name"]
+        ids.discard(pid)
+        anatomy["parts"] = [p for p in anatomy["parts"] if p["id"] != pid]
+        A.sanitize(anatomy)
+        await changed([])
+        return ToolResult("ok", f"Removed {name}")
+
+    editable = {k: v for k, v in PART_FIELDS.items() if k != "id"}
     scenario_schema, failure_schema = A.SCENARIO, A.FAILURE
     tools = [
         Tool("highlight", "Highlight parts in the viewer.", params({"part_ids": {"type": "array", "items": {"type": "string"}}}), highlight),
@@ -122,6 +172,10 @@ async def respond(
         Tool("create_failure", "Create a new failure from existing parts and show it.", params({"failure": failure_schema}), create_failure),
         Tool("set_explode", "Set how far apart the parts are (0 to 1).", params({"amount": {"type": "number"}}), set_explode),
         Tool("look_closer", "Crop the photo around a visible part to inspect it.", params({"part_id": {"type": "string"}}), look_closer),
+        Tool("edit_parts", "Change fields of existing parts (name, size_mm, center_mm, material, shape, function, ...).",
+             params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, **editable}, ["id"])}}), edit_parts),
+        Tool("add_part", "Add a new part to the model.", params({"part": PART_SCHEMA}), add_part),
+        Tool("remove_part", "Remove a part from the model.", params({"id": {"type": "string"}}), remove_part),
         Tool("ask_user", "Ask the user one short question; ends your turn.",
              params({"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, ["question"]), ask_user),
     ]
