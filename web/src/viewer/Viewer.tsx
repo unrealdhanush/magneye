@@ -20,7 +20,13 @@ export interface ViewerProps {
   focusIds: string[]
   selectedId: string | null
   onSelect: (id: string | null) => void
+  /** When Assemble was pressed: parts fly home one by one, innermost first, and the shell closes last. */
+  assembleAt: number | null
 }
+
+/** Per-part delay between arrivals during assembly; capped so the whole build-up stays around a second. */
+const ASSEMBLE_TOTAL_MS = 900
+const ARRIVAL_FLASH_MS = 320
 
 /** Registry of each part's moving group, so pulses and labels can find parts in world space. */
 type Registry = Map<string, THREE.Object3D>
@@ -64,15 +70,22 @@ function Scene(p: ViewerProps) {
   const registry = useMemo<Registry>(() => new Map(), [])
   const maxLayer = Math.max(0, ...p.anatomy.parts.map(x => x.layer))
   const ordered = useMemo(() => [...p.anatomy.parts].sort((a, b) => a.layer - b.layer), [p.anatomy.parts])
+  // Assembly order: deepest layer first, and within a layer the parts nearest the centre first.
+  const { rank, stagger } = useMemo(() => {
+    const dist = (x: Part) => Math.hypot(...x.center_mm)
+    const order = [...p.anatomy.parts].sort((a, b) => b.layer - a.layer || dist(a) - dist(b))
+    return { rank: new Map(order.map((x, i) => [x.id, i])), stagger: Math.min(55, ASSEMBLE_TOTAL_MS / Math.max(order.length, 1)) }
+  }, [p.anatomy.parts])
+  const shellDelay = p.anatomy.parts.length * stagger
 
   return (
     <group>
       {ordered.map(part => (
-        <PartMesh key={part.id} part={part} s={s} maxLayer={maxLayer} registry={registry} {...p} />
+        <PartMesh key={part.id} part={part} s={s} maxLayer={maxLayer} registry={registry} delay={(rank.get(part.id) ?? 0) * stagger} {...p} />
       ))}
       {p.ground && (p.meshUrl
-        ? <MeshShell url={p.meshUrl} anatomy={p.anatomy} explode={p.explode} xray={p.xray} playback={p.playback} />
-        : <PhotoShell anatomy={p.anatomy} ground={p.ground} imageUrl={p.imageUrl} explode={p.explode} xray={p.xray} playback={p.playback} />)}
+        ? <MeshShell url={p.meshUrl} anatomy={p.anatomy} explode={p.explode} xray={p.xray} playback={p.playback} assembleAt={p.assembleAt} delay={shellDelay} />
+        : <PhotoShell anatomy={p.anatomy} ground={p.ground} imageUrl={p.imageUrl} explode={p.explode} xray={p.xray} playback={p.playback} assembleAt={p.assembleAt} delay={shellDelay} />)}
       {p.playback.kind === 'scenario' && <ScenarioPath scenario={p.playback.scenario} startedAt={p.playback.startedAt} registry={registry} />}
       <CameraDirector playback={p.playback} registry={registry} anatomy={p.anatomy} s={s} />
     </group>
@@ -200,8 +213,22 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
   }, [part, s, anatomy, ground, texture])
 }
 
-function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl }:
-  ViewerProps & { part: Part; s: number; maxLayer: number; registry: Registry }) {
+/**
+ * Explode amount eased toward the slider. During an assembly it holds until `delay` after Assemble was pressed,
+ * then snaps home quickly; returns the eased value and when this item arrived (null outside an assembly).
+ */
+function useStaggeredExplode(explode: number, assembleAt: number | null, delay: number) {
+  const eased = useRef(explode)
+  return (dt: number, now: number) => {
+    const arrive = assembleAt == null ? null : assembleAt + delay
+    const snapping = arrive != null && now >= arrive && now < arrive + 600
+    if (arrive == null || now >= arrive) eased.current += (explode - eased.current) * Math.min(1, dt * (snapping ? 16 : 8))
+    return { value: eased.current, arrive }
+  }
+}
+
+function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl, assembleAt, delay }:
+  ViewerProps & { part: Part; s: number; maxLayer: number; registry: Registry; delay: number }) {
   const mover = useRef<THREE.Group>(null)
   const spinner = useRef<THREE.Group>(null)
   const [hovered, setHovered] = useState(false)
@@ -211,7 +238,7 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
   const home = useMemo(() => new THREE.Vector3(...part.center_mm).multiplyScalar(s), [part.center_mm, s])
   const dir = useMemo(() => explodeDirection(part, s, maxLayer), [part, s, maxLayer])
   const tmp = useMemo(() => ({ pos: new THREE.Vector3(), glow: new THREE.Color() }), [])
-  const eased = useRef(explode)
+  const step = useStaggeredExplode(explode, assembleAt, delay)
   const resting = useMemo(() => materials.map(m => m.opacity), [materials])
 
   useEffect(() => {
@@ -225,10 +252,12 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
     if (!g || !sp) return
     const now = performance.now()
     // Ease toward the slider so explode changes glide instead of jumping.
-    eased.current += (explode - eased.current) * Math.min(1, dt * 8)
-    tmp.pos.copy(home).addScaledVector(dir, eased.current * 1.1)
+    const { value, arrive } = step(dt, now)
+    tmp.pos.copy(home).addScaledVector(dir, value * 1.1)
     let glow = 0, opacity = 1
     tmp.glow.set(ACCENT)
+    // Each part flashes as it locks into place during an assembly.
+    if (arrive != null && now >= arrive && now < arrive + ARRIVAL_FLASH_MS) glow = 0.9 * (1 - (now - arrive) / ARRIVAL_FLASH_MS)
     sp.rotation.set(0, 0, 0)
 
     if (playback.kind === 'scenario') {
@@ -332,10 +361,10 @@ function shellOpacity(explode: number, xray: boolean, playback: Playback) {
   return 1 - clamp01((explode - 0.2) / 0.5) * 0.65
 }
 
-function useShellFade(materials: THREE.Material[], target: number) {
+function useShellFade(materials: THREE.Material[], target: () => number) {
   useFrame((_, dt) => {
     for (const m of materials) {
-      m.opacity += (target - m.opacity) * Math.min(1, dt * 8)
+      m.opacity += (target() - m.opacity) * Math.min(1, dt * 8)
       m.transparent = m.opacity < 0.99
       m.depthWrite = m.opacity > 0.3
       // Skip drawing a faded-out shell entirely: its overlapping walls otherwise streak across the internals.
@@ -349,8 +378,8 @@ function useShellFade(materials: THREE.Material[], target: number) {
  * the front. It is cut into a front and a back half that pull apart along the depth axis as the object explodes,
  * like a real teardown.
  */
-function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback }:
-  { anatomy: Anatomy; ground: Ground; imageUrl: string; explode: number; xray: boolean; playback: Playback }) {
+function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback, assembleAt, delay }:
+  { anatomy: Anatomy; ground: Ground; imageUrl: string; explode: number; xray: boolean; playback: Playback; assembleAt: number | null; delay: number }) {
   const texture = useTexture(imageUrl)
   texture.colorSpace = THREE.SRGBColorSpace
   const s = worldScale(anatomy)
@@ -372,11 +401,13 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback }:
     ]
   }, [texture, ground.object])
   const front = useRef<THREE.Mesh>(null), back = useRef<THREE.Mesh>(null)
-  const eased = useRef(explode)
-  useShellFade(materials, shellOpacity(explode, xray, playback))
+  const step = useStaggeredExplode(explode, assembleAt, delay)
+  const current = useRef(explode)
+  // Opacity follows the halves' actual position, so the shell stays open until it closes in the assembly.
+  useShellFade(materials, () => shellOpacity(current.current, xray, playback))
   useFrame((_, dt) => {
-    eased.current += (explode - eased.current) * Math.min(1, dt * 8)
-    const gap = eased.current * 1.8
+    current.current = step(dt, performance.now()).value
+    const gap = current.current * 1.8
     if (front.current) front.current.position.z = gap
     if (back.current) back.current.position.z = -gap
   })
@@ -389,8 +420,8 @@ function PhotoShell({ anatomy, ground, imageUrl, explode, xray, playback }:
   )
 }
 
-function MeshShell({ url, anatomy, explode, xray, playback }:
-  { url: string; anatomy: Anatomy; explode: number; xray: boolean; playback: Playback }) {
+function MeshShell({ url, anatomy, explode, xray, playback, assembleAt, delay }:
+  { url: string; anatomy: Anatomy; explode: number; xray: boolean; playback: Playback; assembleAt: number | null; delay: number }) {
   const { scene } = useGLTF(url)
   const s = worldScale(anatomy)
   const { object, materials } = useMemo(() => {
@@ -415,7 +446,10 @@ function MeshShell({ url, anatomy, explode, xray, playback }:
     })
     return { object: wrap, materials: mats }
   }, [scene, anatomy, s])
-  useShellFade(materials, shellOpacity(explode, xray, playback))
+  const step = useStaggeredExplode(explode, assembleAt, delay)
+  const current = useRef(explode)
+  useFrame((_, dt) => { current.current = step(dt, performance.now()).value })
+  useShellFade(materials, () => shellOpacity(current.current, xray, playback))
   return <primitive object={object} />
 }
 

@@ -72,6 +72,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const [xray, setXray] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [focusIds, setFocusIds] = useState<string[]>([])
+  const [assembleAt, setAssembleAt] = useState<number | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const started = useRef(false)
   // Latest anatomy/ground as streamed, readable after an await without waiting for a re-render.
@@ -180,7 +181,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         <span className="hud-corner bottom-2 right-2 border-b-2 border-r-2" aria-hidden="true" />
         {anatomy ? (
           <Viewer anatomy={anatomy} ground={ground} imageUrl={session.image_url} meshUrl={meshUrl} explode={explode} xray={xray}
-            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} />
+            playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <img src={session.image_url} alt="" className="max-h-[60%] max-w-[60%] rounded-md opacity-60" />
@@ -197,7 +198,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
               className={`press inline-flex min-h-tap items-center gap-1 rounded-sm px-1.5 text-subheadline ${xray ? 'bg-accent-fill text-white' : 'text-ink hover:bg-ink/5'}`}>
               <IconXray className="h-2.5 w-2.5" /> X-ray
             </button>
-            <button type="button" onClick={() => { setPlayback({ kind: 'idle' }); setFocusIds([]); setSelectedId(null); setExplode(0) }}
+            <button type="button" onClick={() => { setPlayback({ kind: 'idle' }); setFocusIds([]); setSelectedId(null); setExplode(0); setAssembleAt(performance.now()) }}
               className="press inline-flex min-h-tap items-center gap-1 rounded-sm px-1.5 text-subheadline text-ink hover:bg-ink/5">
               <IconReset className="h-2.5 w-2.5" /> Assemble
             </button>
