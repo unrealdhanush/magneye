@@ -1,0 +1,101 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+
+/* Theme values as RGB channels so Tailwind opacity modifiers work. data-theme is set before first paint (index.html). */
+:root {
+  color-scheme: light;
+  --ink: 29 29 31; --muted: 110 110 115; --bg: 245 245 247; --card: 255 255 255;
+  --accent: 0 122 255; --accent-text: 0 102 204; --accent-fill: 0 102 204; --accent-strong: 0 88 176;
+  --blue: 0 122 255; --blue-text: 0 102 204;
+  --indigo: 88 86 214; --indigo-text: 88 86 214;
+  --purple: 175 82 222; --purple-text: 137 68 171;
+  --pink: 255 45 85; --pink-text: 211 15 69;
+  --orange: 255 149 0; --orange-text: 201 52 0;
+  --teal: 48 176 199; --teal-text: 0 113 164;
+  --green: 52 199 89; --green-text: 30 123 52;
+  --red: 255 59 48; --red-text: 215 0 21;
+  --line: rgb(0 0 0 / 0.08); --shadow: rgb(0 0 0 / 0.08);
+  --shadow-border: 0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06), 0 2px 4px 0 rgb(0 0 0 / 0.04);
+  --shadow-border-hover: 0 0 0 1px rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.08), 0 2px 4px 0 rgb(0 0 0 / 0.06);
+  --edge: linear-gradient(145deg, rgb(255 255 255 / 0.9), rgb(0 122 255 / 0.25) 45%, rgb(175 82 222 / 0.2) 70%, rgb(255 255 255 / 0.6));
+  --stage: radial-gradient(120% 90% at 50% 35%, rgb(255 255 255), rgb(232 236 244));
+  --grid-line: rgb(0 40 120 / 0.06);
+  --hud: rgb(0 102 204 / 0.55);
+  --img-outline: rgb(0 0 0 / 0.1);
+  --glass-bg: rgb(255 255 255 / 0.6); --glass-border: rgb(255 255 255 / 0.5); --glass-inset: rgb(255 255 255 / 0.6);
+  --backdrop:
+    radial-gradient(at 0% 0%, rgb(0 122 255 / 0.18), transparent 50%),
+    radial-gradient(at 100% 0%, rgb(175 82 222 / 0.16), transparent 50%),
+    radial-gradient(at 100% 100%, rgb(255 45 85 / 0.12), transparent 50%),
+    radial-gradient(at 0% 100%, rgb(48 176 199 / 0.16), transparent 50%);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: 245 245 247; --muted: 161 161 166; --bg: 0 0 0; --card: 28 28 30;
+  --accent: 10 132 255; --accent-text: 64 156 255; --accent-fill: 0 113 227; --accent-strong: 0 98 196;
+  --blue: 10 132 255; --blue-text: 64 156 255;
+  --indigo: 94 92 230; --indigo-text: 125 122 255;
+  --purple: 191 90 242; --purple-text: 218 143 255;
+  --pink: 255 55 95; --pink-text: 255 100 130;
+  --orange: 255 159 10; --orange-text: 255 179 64;
+  --teal: 64 200 224; --teal-text: 90 200 245;
+  --green: 48 209 88; --green-text: 48 209 88;
+  --red: 255 69 58; --red-text: 255 105 97;
+  --line: rgb(255 255 255 / 0.12); --shadow: rgb(0 0 0 / 0.4);
+  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
+  --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.14);
+  --edge: linear-gradient(145deg, rgb(148 163 184 / 0.3), rgb(10 132 255 / 0.4) 45%, rgb(191 90 242 / 0.3) 70%, rgb(148 163 184 / 0.15));
+  --stage: radial-gradient(120% 90% at 50% 35%, rgb(20 26 38), rgb(6 8 12));
+  --grid-line: rgb(100 180 255 / 0.07);
+  --hud: rgb(100 180 255 / 0.6);
+  --img-outline: rgb(255 255 255 / 0.1);
+  --glass-bg: rgb(28 28 30 / 0.6); --glass-border: rgb(255 255 255 / 0.1); --glass-inset: rgb(255 255 255 / 0.08);
+  --backdrop:
+    radial-gradient(at 0% 0%, rgb(10 132 255 / 0.28), transparent 50%),
+    radial-gradient(at 100% 0%, rgb(191 90 242 / 0.24), transparent 50%),
+    radial-gradient(at 100% 100%, rgb(255 55 95 / 0.18), transparent 50%),
+    radial-gradient(at 0% 100%, rgb(64 200 224 / 0.2), transparent 50%);
+}
+
+body { @apply bg-bg font-sans text-body text-ink antialiased; }
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--backdrop), rgb(var(--bg));
+}
+button, th, td, caption, summary { text-align: left; }
+a { @apply text-accent-text underline underline-offset-2 hover:decoration-2; }
+:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+@layer components {
+  .glass {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    @apply shadow-glass;
+  }
+  .surface { @apply rounded-lg bg-card shadow-ring; }
+  /* 1px gradient edge around a darker glass interior: the edge stays crisp because the fill is darker. */
+  .edge { position: relative; }
+  .edge::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: var(--edge);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  .stage { background: var(--stage); }
+  .stage-grid {
+    background-image: linear-gradient(var(--grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(80% 70% at 50% 45%, #000 40%, transparent 100%);
+  }
+  /* Scanner reticle corners on the 3D stage. */
+  .hud-corner { position: absolute; width: 24px; height: 24px; border-color: var(--hud); pointer-events: none; }
+  .press { transition-property: scale, background-color, box-shadow, color; transition-duration: 150ms; transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); }
+  .press:active:not(:disabled) { scale: 0.96; }
+  .img-outline { outline: 1px solid var(--img-outline); outline-offset: -1px; }
+}
+.tabular { font-variant-numeric: tabular-nums; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background: rgb(var(--card)); } }
+@media (prefers-reduced-transparency: reduce) { .glass { background: rgb(var(--card)); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+@media (prefers-contrast: more) { .glass { background: rgb(var(--card)); border-color: rgb(var(--muted)); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

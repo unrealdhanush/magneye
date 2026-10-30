@@ -1,0 +1,32 @@
+[project]
+name = "magneye"
+version = "0.1.0"
+description = "See inside anything: one photo and a prompt become an interactive 3D exploded view, built by Meta models."
+authors = [
+    { name = "Dhanush Balakrishna", email = "dhanushbalakrishna796@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.162.0",
+    "httpx>=0.28.1",
+    "meta-sam-parser>=0.1.0",
+    "numpy>=2.4.6",
+    "pillow>=13.0.0",
+    "pydantic>=2.14.2",
+    "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+magneye = "magneye:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "playwright>=1.64.1",
+    "pytest>=9.2.0",
+]
