@@ -8,6 +8,7 @@ their boxes as turned by their rotation (see checks._bounds).
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -114,20 +115,32 @@ def _distinct_axis(p: dict[str, Any]) -> int:
     return round_axis(p["shape"] if p["shape"] in ROUND else "cylinder", p["size_mm"])
 
 
+def _quarter(k: int, deg: float) -> np.ndarray:
+    """A turn about own axis k."""
+    c, s = round(np.cos(np.radians(deg))), round(np.sin(np.radians(deg)))
+    m = np.eye(3)
+    i, j = (k + 1) % 3, (k + 2) % 3
+    m[i, i], m[i, j], m[j, i], m[j, j] = c, -s, s, c
+    return m
+
+
 def _point_out(p: dict[str, Any], axis: int, plate: dict[str, Any], t: int, out: np.ndarray) -> bool:
-    """Point the part's `axis` along `out` (the plate's normal, outward), taking the plate's turn if it is more than
-    the tolerance off; record which own axis now points out as "faces". True if it was turned."""
+    """Point the part's own `axis` along `out` (the plate's normal, outward) if it is more than the tolerance off:
+    the plate's turn plus a quarter or half turn that carries the axis onto the plate's normal. Only the turn changes,
+    never the size, so a built model turns as a whole. Records "faces" (the own axis that points out). True if turned."""
     own = np.array(pose.part_rotation(p.get("rotation_deg") or [0, 0, 0]))
     along = float(own[:, axis] @ out)
     if abs(along) >= np.cos(np.radians(FACING_TOLERANCE_DEG)):
         p["faces"] = ("+" if along > 0 else "-") + "xyz"[axis]
         return False
-    across = [p["size_mm"][i] for i in range(3) if i != axis]
-    across.insert(t, p["size_mm"][axis])
-    p["size_mm"] = across
-    p["rotation_deg"] = list(plate.get("rotation_deg") or [0, 0, 0])
-    frame = np.array(pose.part_rotation(p["rotation_deg"]))
-    p["faces"] = ("+" if float(frame[:, t] @ out) > 0 else "-") + "xyz"[t]
+    frame = np.array(pose.part_rotation(plate.get("rotation_deg") or [0, 0, 0]))
+    target = np.zeros(3)
+    target[t] = 1.0 if float(frame[:, t] @ out) > 0 else -1.0
+    # A turn (in the plate's own frame) taking the part's axis onto the plate's outward thin axis.
+    turns = [np.eye(3)] + [_quarter(k, d) for k in range(3) for d in (90, -90, 180)]
+    turn = next(q for q in turns if np.allclose(q[:, axis], target))
+    p["rotation_deg"] = pose.euler_xyz((frame @ turn).tolist())
+    p["faces"] = "+" + "xyz"[axis]
     return True
 
 
@@ -135,8 +148,8 @@ def face_out(anatomy: dict[str, Any]) -> list[str]:
     """Turn controls that sit on a plate (buttons, caps, sticks, dials, lenses) so they face out of it, and the
     mechanisms joined to them behind it (a thumbstick's module, a button's switch) so they point the same way, as the
     real ones do. Each part handled gets "faces": the own axis that points out (its cap, shaft or face goes that way).
-    Modeled parts keep their turn (their recipe is built in their own frame), and things that roll across a face are
-    left alone. Returns what changed."""
+    Parts are only turned, never resized, so modeled ones turn as a whole; things that roll across a face are left
+    alone. Returns what changed."""
     parts = anatomy["parts"]
     by_id = {p["id"]: p for p in parts}
     # Thin outer parts are faces things mount on; round thin ones (a button, a ring) are the things mounted.
@@ -168,7 +181,7 @@ def face_out(anatomy: dict[str, Any]) -> list[str]:
 
     turned, controls = [], {}
     for p in parts:
-        if (p["kind"] != "exterior" or p["shape"] not in ROUND or p in plates or p.get("model")
+        if (p["kind"] != "exterior" or p["shape"] not in ROUND or p in plates
                 or ROLLS.search(f"{p['id']} {p.get('name', '')}")):
             continue
         found = mount(p)
@@ -178,17 +191,52 @@ def face_out(anatomy: dict[str, Any]) -> list[str]:
         controls[p["id"]] = (q, t, out)
         if _point_out(p, round_axis(p["shape"], p["size_mm"]), q, t, out):
             turned.append(f"{p['id']} now faces out of {q['id']}")
-    # The mechanism a control works sits behind the face, pointing the same way (its outward side is the control's).
-    for c in anatomy.get("connections", []):
-        if c.get("kind") != "mechanical":
-            continue
-        for a, b in ((c["from"], c["to"]), (c["to"], c["from"])):
-            m = by_id.get(b)
-            if a not in controls or m is None or b in controls or m in plates or m.get("model"):
+    # The mechanism a control works sits behind the face, pointing the same way (its outward side is the control's):
+    # a part joined to it mechanically, or an internal part right beneath it that shares its name (thumbstick_cap and
+    # thumbstick_module) or is joined to it at all.
+    linked = {frozenset((c.get("from"), c.get("to"))): c.get("kind") for c in anatomy.get("connections", [])}
+    for a, (q, t, out) in controls.items():
+        control = by_id[a]
+        for m in parts:
+            if m["id"] in controls or m in plates or m is control:
                 continue
-            q, t, out = controls[a]
-            if mount(m, behind=max(by_id[a]["size_mm"])) is None:
+            kind = linked.get(frozenset((a, m["id"])))
+            if kind != "mechanical":
+                if m["kind"] != "internal" or not (kind or _shares_name(a, m["id"])) or not _beneath(m, control, out):
+                    continue
+            if mount(m, behind=max(control["size_mm"])) is None:
                 continue
-            if _point_out(m, _distinct_axis(m), q, t, out):
+            axis = _distinct_axis(m)
+            moved = _point_out(m, axis, q, t, out) | _seat_behind(m, axis, control, out)
+            if moved:
                 turned.append(f"{m['id']} now points out of {q['id']} with {a}")
     return turned
+
+
+SEAT_OVERLAP = 0.3
+
+
+def _seat_behind(m: dict[str, Any], axis: int, control: dict[str, Any], out: np.ndarray) -> bool:
+    """Stack the mechanism straight behind its control along the face's normal (the control stays where the photo
+    showed it), overlapping a little so a shaft reaches into its cap. True if it moved."""
+    c_axis = round_axis(control["shape"], control["size_mm"]) if control["shape"] in ROUND else int(np.argmin(control["size_mm"]))
+    hc, hm = control["size_mm"][c_axis], m["size_mm"][axis]
+    gap = hc / 2 + hm / 2 - SEAT_OVERLAP * min(hc, hm)
+    target = [round(float(v), 1) for v in np.array(control["center_mm"], float) - out * gap]
+    if math.dist(target, m["center_mm"]) < 1.0:
+        return False
+    m["center_mm"] = target
+    return True
+
+
+def _shares_name(a: str, b: str) -> bool:
+    words = lambda s: {w for w in re.split(r"[_\W]+", s.lower()) if len(w) > 2}
+    return bool(words(a) & words(b))
+
+
+def _beneath(m: dict[str, Any], control: dict[str, Any], out: np.ndarray) -> bool:
+    """Whether `m` sits behind `control` within its footprint: under it along the face's normal, not off to a side."""
+    d = np.array(m["center_mm"], float) - np.array(control["center_mm"], float)
+    depth_ = float(d @ out)
+    across = float(np.linalg.norm(d - depth_ * out))
+    return depth_ <= 3 and -depth_ <= max(control["size_mm"]) + max(m["size_mm"]) and across <= max(control["size_mm"]) / 2 + 3

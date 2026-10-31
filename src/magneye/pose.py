@@ -96,6 +96,16 @@ def box_corners_in_photo(anatomy: dict[str, Any], center: Vec, size: Vec, rotati
     return [(c[0], c[1]) for c in (apply(m, k) for k in box_corners(center, size, rotation_deg))]
 
 
+def euler_xyz(m: Matrix) -> Vec:
+    """The rotation_deg (three.js Euler XYZ) of a part-to-object rotation matrix: the inverse of part_rotation."""
+    y = math.asin(max(-1.0, min(1.0, m[0][2])))
+    if abs(m[0][2]) < 0.9999999:
+        x, z = math.atan2(-m[1][2], m[2][2]), math.atan2(-m[0][1], m[0][0])
+    else:
+        x, z = math.atan2(m[2][1], m[1][1]), 0.0
+    return [round(math.degrees(v), 1) + 0.0 for v in (x, y, z)]
+
+
 def part_rotation(rotation_deg: Vec) -> Matrix:
     """A part's own frame -> the object's frame, exactly as the viewer turns it (three.js Euler XYZ: Rx · Ry · Rz)."""
     x, y, z = (math.radians(float(v or 0)) for v in (list(rotation_deg) + [0, 0, 0])[:3])

@@ -295,6 +295,11 @@ def fit_depth(anatomy: dict[str, Any], front: Outline, side: Outline, front_poin
 
     best, best_score = parts, score(parts)
     by_id = {p["id"]: p for p in parts}
+    body = next(iter(members_of), None)
+    # A group showing in the front photo (SAM was asked to find one of its parts) is on the front: whatever fills
+    # the side outline, it can't end up behind the body if it started in front of it.
+    shown = {k for k, ms in members_of.items() if k != body and any(by_id[m]["kind"] != "internal" and by_id[m].get("sam_prompt") for m in ms)}
+    in_front = {k for k in shown if body and by_id[k]["center_mm"][2] >= by_id[body]["center_mm"][2]}
     travel: dict[str, list[float]] = {}
     reach = max(dims)
     for tilts, shifts, lifts in zip(TILTS, SHIFTS, LIFTS):
@@ -317,6 +322,10 @@ def fit_depth(anatomy: dict[str, Any], front: Outline, side: Outline, front_poin
                             or (o.get("stretch", 1.0) != 1.0 and solids and members[0] in solids)):
                         continue
                     trial = move(base, members, **o)
+                    if key in in_front or (anchor and in_front):
+                        placed = {q["id"]: q for q in trial}
+                        if any(placed[k]["center_mm"][2] < placed[body]["center_mm"][2] for k in in_front):
+                            continue
                     s = score(trial) - LIFT_COST * abs(o.get("lift", 0.0))
                     if s > found_score + 1e-3:
                         found, found_score, pick = trial, s, o

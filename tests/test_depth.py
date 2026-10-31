@@ -11,6 +11,15 @@ def _part(pid, center, size, kind="exterior", shape="rounded_box", rotation=(0, 
             "rotation_deg": list(rotation), "layer": 1}
 
 
+def _points_out(part, axis, plate):
+    """Whether the part's own `axis` lies along the plate's normal, pointing away from the object's centre."""
+    from magneye import pose
+    own = np.array(pose.part_rotation(part["rotation_deg"]))[:, axis]
+    normal = np.array(pose.part_rotation(plate["rotation_deg"]))[:, int(np.argmin(plate["size_mm"]))]
+    normal *= np.sign(normal @ np.array(plate["center_mm"], float)) or 1.0
+    return float(own @ normal) > 0.99
+
+
 def _outline(parts, camera):
     """The outline a perfect segmentation of `parts` seen from `camera` would give."""
     empty = Outline(np.zeros((GRID, GRID), bool), -25.0, -25.0, 150 / GRID, [0, 0, 100, 100])
@@ -41,7 +50,9 @@ def test_round_parts_on_a_plate_face_out_of_it_but_wheels_do_not():
     wheel = _part("scroll_wheel", (0, 10, 14), (6, 18, 18), shape="disc")
     anatomy = {"parts": [plate, cap, wheel]}
     assert mates.face_out(anatomy) == ["thumbstick_cap now faces out of face_plate"]
-    assert cap["size_mm"] == [18, 18, 10] and cap["rotation_deg"] == [-25, 0, 10]
+    # Turned, not resized: its own round axis (y) now points out of the plate, away from the object's centre.
+    assert cap["size_mm"] == [18, 10, 18] and cap["faces"] == "+y"
+    assert _points_out(cap, 1, plate)
     assert wheel["rotation_deg"] == [0, 0, 0]
 
 
@@ -58,4 +69,5 @@ def test_a_controls_mechanism_points_out_of_the_face_with_it():
     module = _part("thumbstick_module", (0, 26, 4), (17, 14, 17), kind="internal", shape="box", rotation=(-25, 0, 0))
     anatomy = {"parts": [plate, cap, module], "connections": [{"from": "thumbstick_cap", "to": "thumbstick_module", "kind": "mechanical"}]}
     assert mates.face_out(anatomy) == ["thumbstick_module now points out of face_plate with thumbstick_cap"]
-    assert module["size_mm"] == [17, 17, 14] and module["faces"] == "+z" and cap["faces"] == "+z"
+    assert module["size_mm"] == [17, 14, 17] and module["faces"] == "+y" and cap["faces"] == "+z"
+    assert _points_out(module, 1, plate)
