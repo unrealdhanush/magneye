@@ -26,7 +26,7 @@ A recipe is in millimetres around the part's own centre, in the part's own frame
 
 Tools:
 - model_parts(models): build recipes for several parts in one call; each reports its built size against the part's and any error to fix.
-- view_models(): see your work: the photo, your parts drawn over the photo exactly where the camera would see them, and the internals on their own.
+- view_models(): see your work: the photo, your parts drawn over the photo exactly where the camera would see them, and the internals on their own; when a real photo of another side exists, also that photo next to your parts seen from the same side.
 - place_parts(updates): fix where parts are and how big they are (center_mm, size_mm, rotation_deg), in the object's own frame. Use it when the overlay shows parts offset, too small or large, turned the wrong way, or not nested the way they really are (LEDs inside the ring they light, a cell inside its holder, a board inside its shell).
 - set_camera(azimuth_deg, elevation_deg, roll_deg): correct the photo's viewpoint if the whole model sits turned against the photo.
 - {mates.DOC}
@@ -34,14 +34,44 @@ Tools:
 
 The overlay is the test: when you are done, the parts should cover the object in the photo, each where it really is, and fit together the way they are assembled (use mate_parts rather than nudging positions by hand).
 
+The main photo can't show depth, so a layout can match it and still be wrong from the side. When the side view is there, it is the second test: compare the silhouettes part by part (how long and thick each part is front to back, its tilt, where it meets its neighbours) and fix every mismatch with place_parts or model_parts, even when the main overlay already looks right. A body the real object has as one piece (a handle running up into a head or ring) must read as one piece from the side too: no gaps, no floating slabs.
+
 Work in at most three turns:
 1. model_parts for every part you will model, and view_models in the same turn.
-2. Fix what the overlay shows: set_camera if everything is turned, place_parts for parts in the wrong place or size, model_parts for shapes that are wrong; then view_models again in the same turn.
+2. Fix what the overlay and the side view show: first write down each mismatch you see in either, then set_camera if everything is turned, place_parts for parts in the wrong place, size or tilt, model_parts for shapes that are wrong; then view_models again in the same turn.
 3. Final touches if needed, and finish."""
 
 
 def _count(n: int, one: str) -> str:
     return f"{n} {one}{'s' * (n != 1)}"
+
+
+# Where the camera stands for a reference photo of each side (azimuth, elevation), in the object's frame.
+SIDE_VIEWS = {"left": (-90.0, 0.0), "right": (90.0, 0.0), "back": (180.0, 0.0), "top": (0.0, 90.0)}
+
+
+def side_reference(views: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """The reference photo that best shows what the main photo can't: a side, then the back, then the top."""
+    order = list(SIDE_VIEWS)
+    found = [v for v in views or [] if v.get("view") in SIDE_VIEWS and v.get("jpeg")]
+    return min(found, key=lambda v: (order.index(v["view"]), not v.get("upright"))) if found else None
+
+
+def _side_panels(view: dict[str, Any], anatomy: dict[str, Any], solids: dict[str, Any]) -> bytes:
+    """A reference photo of another side next to the models seen from that side, so depth, tilt and how parts
+    join (which the main photo can't show) can be checked against the real object."""
+    size = 420
+    ref = Image.open(io.BytesIO(view["jpeg"])).convert("RGB")
+    ref.thumbnail((size, size))
+    az, el = SIDE_VIEWS[view["view"]]
+    tiles = [(f"Reference photo: {view['view']} side", ref), (f"Your models from the {view['view']} side", M.render(anatomy, solids, size=size, view=(az, el, 0.0)))]
+    sheet = Image.new("RGB", (size * 2 + 16, size + 28), (12, 14, 18))
+    draw = ImageDraw.Draw(sheet)
+    for i, (label, tile) in enumerate(tiles):
+        x = i * (size + 16)
+        sheet.paste(tile, (x + (size - tile.width) // 2, 28 + (size - tile.height) // 2))
+        draw.text((x + 4, 6), label, fill=(230, 236, 245))
+    return M.jpeg(sheet)
 
 
 def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dict[str, Any]) -> bytes:
@@ -68,10 +98,12 @@ def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dic
 
 
 async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
-                outline: fit.Outline | None = None, printed: list[dict[str, Any]] | None = None) -> int:
+                outline: fit.Outline | None = None, printed: list[dict[str, Any]] | None = None,
+                views: list[dict[str, Any]] | None = None) -> int:
     """Run the modeler on `anatomy` in place (recipes go on parts as "model"). Returns how many parts it modeled."""
     parts = {p["id"]: p for p in anatomy["parts"]}
     solids: dict[str, Any] = {}
+    side = side_reference(views)
     # The best-scoring layout seen so far: a late move that loses overlap with SAM's outline is undone at the end.
     best: dict[str, Any] = {}
 
@@ -126,8 +158,15 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         score_text = f" Overlap with SAM's outline of the object: {now:.0%} (higher is better)." if now is not None else ""
         gaps = [i for i in geometry_issues(anatomy) if "apart; move them to touch" in i]
         joins = (" Joined parts that don't touch yet: " + " ".join(gaps)) if gaps else ""
-        return ToolResult(f"The renders are attached in the next message.{score_text}{joins}", f"Drew {_count(len(solids), 'model')} over the photo{f' · {now:.0%} overlap' if now is not None else ''}",
-                          attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}])
+        attach = [meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}]
+        if side:
+            attach += [meta.image_part(_side_panels(side, anatomy, solids)), {"type": "text", "text":
+                       f"A real photo of the {side['view']} side ({side.get('note', '')}; it may be turned or tilted, so compare shapes, "
+                       f"not orientation) next to your outer parts seen from that side. The main photo can't show depth: check here "
+                       f"that each part's tilt, depth and how it joins its neighbours match the real object, and fix what doesn't."}]
+        return ToolResult(f"The renders are attached in the next message.{score_text}{joins}",
+                          f"Drew {_count(len(solids), 'model')} over the photo{f' · {now:.0%} overlap' if now is not None else ''}"
+                          + (f" and from the {side['view']} side" if side else ""), attach=attach)
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []

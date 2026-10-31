@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { api } from '../api'
+import { api, HttpError } from '../api'
 import type { Anatomy, Part, Vec3 } from '../types'
 
-export type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 const SAVE_DELAY_MS = 500
 // Edits to the same field within this window (typing, dragging) undo as one step.
 const COALESCE_MS = 1500
@@ -35,10 +35,24 @@ export function useAnatomyEditor(sid: string, latest: MutableRefObject<{ anatomy
   const [saving, setSaving] = useState<SaveState>('idle')
   const pending = useRef<{ anatomy: Anatomy; timer: ReturnType<typeof setTimeout> } | null>(null)
 
+  // The server's revision this tab last saw. Undo restores snapshots with older revisions, so it isn't read off them.
+  const serverRevision = useRef(0)
   const send = useCallback(async (a: Anatomy) => {
     setSaving('saving')
-    try { await api.saveAnatomy(sid, a); setSaving('saved') } catch { setSaving('error') }
-  }, [sid])
+    const base = Math.max(serverRevision.current, latest.current.anatomy?.revision ?? 0)
+    try {
+      serverRevision.current = (await api.saveAnatomy(sid, a, base)).revision ?? base + 1
+      setSaving('saved')
+    } catch (e) {
+      if (!(e instanceof HttpError && e.status === 409)) { setSaving('error'); return }
+      // Someone saved a newer version (another tab, another person): show theirs rather than overwrite it.
+      try {
+        const fresh = (await api.session(sid)).anatomy
+        if (fresh) { serverRevision.current = fresh.revision ?? 0; latest.current.anatomy = fresh; setAnatomy(fresh) }
+      } catch { /* keep what's on screen */ }
+      setSaving('conflict')
+    }
+  }, [sid, latest, setAnatomy])
   const flush = useCallback(async () => {
     const p = pending.current
     if (!p) return

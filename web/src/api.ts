@@ -1,8 +1,12 @@
 import type { AgentEvent, Anatomy, Session } from './types'
 
+export class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message) }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init)
-  if (!r.ok) throw new Error(await detail(r))
+  if (!r.ok) throw new HttpError(r.status, await detail(r))
   return r.json() as Promise<T>
 }
 
@@ -42,8 +46,10 @@ export const api = {
   build: (id: string, onEvent: (e: AgentEvent) => void) => stream(`/api/sessions/${id}/build`, {}, onEvent),
   ask: (id: string, prompt: string, onEvent: (e: AgentEvent) => void) => stream(`/api/sessions/${id}/ask`, { prompt }, onEvent),
   reconstruct: (id: string) => call<{ mesh_url: string }>(`/api/sessions/${id}/reconstruct`, { method: 'POST' }),
-  saveAnatomy: (id: string, anatomy: Anatomy) =>
-    call<Anatomy>(`/api/sessions/${id}/anatomy`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(anatomy) }),
+  /** Saves over `baseRevision` only; a 409 means someone saved a newer version first. */
+  saveAnatomy: (id: string, anatomy: Anatomy, baseRevision: number) =>
+    call<Anatomy>(`/api/sessions/${id}/anatomy`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...anatomy, base_revision: baseRevision }) }),
   transcribe: (wav: Blob) => {
     const form = new FormData()
     form.append('audio', wav, 'clip.wav')

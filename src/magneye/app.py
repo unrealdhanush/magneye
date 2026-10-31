@@ -354,6 +354,10 @@ def save_anatomy(sid: str, body: dict[str, Any]) -> dict[str, Any]:
     current = _read_json(d / "anatomy.json")
     if current is None:
         raise HTTPException(409, "build the anatomy first")
+    # A save made from an older version (a stale tab, a script) would silently undo the edits made since.
+    base = body.get("base_revision")
+    if isinstance(base, int) and base != current.get("revision", 0):
+        raise HTTPException(409, f"stale: the model changed since revision {base} (now {current.get('revision', 0)})")
     parts = body.get("parts")
     if not isinstance(parts, list) or not all(isinstance(p, dict) and REQUIRED_PART_KEYS <= p.keys() for p in parts):
         raise HTTPException(400, f"every part needs {sorted(REQUIRED_PART_KEYS)}")

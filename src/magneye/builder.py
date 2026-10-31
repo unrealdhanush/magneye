@@ -297,7 +297,7 @@ async def build(
         await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
-        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed)
+        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed, views=picked)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})

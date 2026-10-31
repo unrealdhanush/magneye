@@ -296,7 +296,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
               <button type="button" onClick={editor.redo} disabled={!editor.canRedo} title="Redo (⇧⌘Z)"
                 className="press inline-flex min-h-tap items-center rounded-sm px-1.5 text-subheadline text-ink hover:bg-ink/5 disabled:opacity-40">Redo</button>
               <span role="status" className="min-w-[64px] px-1 font-mono text-caption text-muted">
-                {{ idle: '', saving: 'Saving…', saved: 'Saved', error: 'Not saved' }[editor.saving]}
+                {{ idle: '', saving: 'Saving…', saved: 'Saved', error: 'Not saved', conflict: 'Newer version loaded' }[editor.saving]}
               </span>
             </div>
           </div>
