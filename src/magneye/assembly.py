@@ -83,20 +83,26 @@ def _inside(point: list[float], solid: Manifold) -> bool:
     return all(b[i] <= point[i] <= b[3 + i] for i in range(3))
 
 
-def _push(mover: dict[str, Any], placed_mover: Manifold, other: Manifold) -> list[float]:
-    """The shortest move (along one axis) that takes `mover` out of `other`, plus a hair."""
+def _pushes(placed_mover: Manifold, other: Manifold) -> list[list[float]]:
+    """The moves along one axis, either way, that take the mover out of `other` (plus a hair), shortest first."""
     inter = placed_mover ^ other
     if inter.is_empty():
-        return [0.0, 0.0, 0.0]
-    b = inter.bounding_box()
-    depth = [b[3 + i] - b[i] for i in range(3)]
-    axis = int(np.argmin(depth))
-    mb, ob = placed_mover.bounding_box(), other.bounding_box()
-    mid = lambda bb: (bb[axis] + bb[3 + axis]) / 2
-    sign = 1.0 if mid(mb) >= mid(ob) else -1.0
-    move = [0.0, 0.0, 0.0]
-    move[axis] = sign * (depth[axis] + GAP_MM)
-    return move
+        return []
+    ib, mb = inter.bounding_box(), placed_mover.bounding_box()
+    moves = []
+    for axis in range(3):
+        for sign, dist in ((1.0, ib[3 + axis] - mb[axis]), (-1.0, mb[3 + axis] - ib[axis])):
+            step = [0.0, 0.0, 0.0]
+            step[axis] = sign * (dist + GAP_MM)
+            moves.append(step)
+    return sorted(moves, key=lambda s: max(map(abs, s)))
+
+
+def _container(mover: dict[str, Any], parts: list[dict[str, Any]], placed: dict[str, Manifold]) -> Manifold | None:
+    """What a part must stay inside when it's pushed: the outer part around it (its holder), if any."""
+    around = [placed[p["id"]] for p in parts if p is not mover and p["kind"] != "internal"
+              and _inside(mover["center_mm"], placed[p["id"]])]
+    return max(around, key=lambda s: s.volume()) if around else None
 
 
 def resolve(anatomy: dict[str, Any]) -> list[str]:
@@ -140,8 +146,12 @@ def resolve(anatomy: dict[str, Any]) -> list[str]:
                 else:
                     mover = a if volume[a["id"]] <= volume[b["id"]] else b
                 other = b if mover is a else a
-                step = _push(mover, placed[mover["id"]], placed[other["id"]])
-                if any(step):
+                # The shortest push that keeps an inner part inside the part around it (a cell stays in its bay);
+                # if none does, the two are left for a groove.
+                box = _container(mover, parts, placed) if mover["kind"] == "internal" else None
+                step = next((s for s in _pushes(placed[mover["id"]], placed[other["id"]])
+                             if box is None or _inside([c + d for c, d in zip(mover["center_mm"], s)], box)), None)
+                if step:
                     mover["center_mm"] = [round(c + d, 1) for c, d in zip(mover["center_mm"], step)]
                     placed[mover["id"]] = _placed(mover, own[mover["id"]])
                     changes.append(f"{mover['id']} moved {max(map(abs, step)):.0f} mm out of {other['id']}")
