@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import depth, fit, mates, meta, modeler, pose, prints, views
+from . import assembly, depth, fit, mates, meta, modeler, pose, prints, views
 from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
@@ -342,6 +342,14 @@ async def build(
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
     # The front photo can't show depth; with the parts' real shapes built, a side photo fits it.
     await _fit_depth(work, outline, found_side, emit)
+    # Last, the parts are made to fit together like building blocks: holders get pockets, colliding parts move apart.
+    fitted_parts = assembly.resolve(work)
+    if fitted_parts:
+        pockets, moves = sum("pocket" in c for c in fitted_parts), sum("moved" in c for c in fitted_parts)
+        await emit({"type": "step", "agent": "builder", "tool": "fit_parts", "status": "done",
+                    "text": f"Fitted the parts together: {_count(pockets, 'pocket', 'pockets')} carved for parts that sit in others, "
+                            f"{_count(moves, 'part', 'parts')} moved apart so nothing overlaps"})
+        await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     return await _with_profile(A.sanitize(work), profile, emit)
 
 

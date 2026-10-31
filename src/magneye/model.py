@@ -262,16 +262,19 @@ def outlines(solid: Manifold) -> dict[str, list[list[list[float]]]]:
     return out
 
 
-def encode(solid: Manifold, part: dict[str, Any] | None = None) -> dict[str, Any]:
+def encode(solid: Manifold, part: dict[str, Any] | None = None, frame: Manifold | None = None) -> dict[str, Any]:
     """A solid for the viewer: base64 float32 positions and uint32 indices in the recipe's own frame and its
     bounds in millimetres; with the part, also its blueprint silhouettes as placed (turned and sized), relative to
-    the part's centre."""
+    the part's centre. `frame` is the solid as built when `solid` has pockets cut in it: its bounds are the ones
+    reported and placed by, so a pocket opening through a face doesn't resize the part."""
+    frame = frame or solid
     v, t = arrays(solid)
-    lo, hi = v.min(axis=0), v.max(axis=0)
+    fv, _ = arrays(frame)
+    lo, hi = fv.min(axis=0), fv.max(axis=0)
     out = {"positions": base64.b64encode(v.tobytes()).decode(), "indices": base64.b64encode(t.tobytes()).decode(),
            "min": [round(float(x), 3) for x in lo], "max": [round(float(x), 3) for x in hi]}
     if part is not None:
-        out["outlines"] = outlines(placed({**part, "center_mm": [0, 0, 0]}, solid))
+        out["outlines"] = outlines(solid.transform(placement({**part, "center_mm": [0, 0, 0]}, frame)))
     return out
 
 

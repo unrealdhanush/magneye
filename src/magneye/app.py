@@ -22,7 +22,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import anatomy as A
-from . import guide, meta
+from . import assembly, guide, meta
 from . import model as model_kit
 from .agent import Emit
 from .builder import build
@@ -316,18 +316,23 @@ class Ask(BaseModel):
     prompt: str
 
 
-MODELS_FORMAT = "3"  # 2: blueprint outlines; 3: outlines placed by size and rotation
+MODELS_FORMAT = "4"  # 2: blueprint outlines; 3: outlines placed by size and rotation; 4: pockets carved
 
 
 @app.get("/api/sessions/{sid}/models")
 def session_models(sid: str) -> dict[str, Any]:
-    """Meshes of the parts that have geometry recipes, built by Manifold and cached until a recipe changes."""
+    """Meshes of the parts that have geometry recipes or pockets, built by Manifold with the pockets carved for the
+    parts they hold, and cached until the layout changes."""
     d = _session_dir(sid)
     anatomy = _read_json(d / "anatomy.json") or {"parts": []}
-    modeled = {p["id"]: p for p in anatomy["parts"] if p.get("model")}
-    # Outlines depend on each part's size and rotation as well as its recipe; the format version is part of the key
-    # too, so meshes cached before a format change are rebuilt.
-    placed = {pid: [p["model"], p["size_mm"], p.get("rotation_deg")] for pid, p in modeled.items()}
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    modeled = {p["id"]: p for p in anatomy["parts"] if p.get("model") or p.get("cuts")}
+    # Outlines depend on each part's size and rotation as well as its recipe, and pockets on where the parts they
+    # hold are; the format version is part of the key too, so meshes cached before a format change are rebuilt.
+    placed = {pid: [p.get("model"), p["size_mm"], p.get("rotation_deg"), p.get("cuts"),
+                    [[by_id[g].get("model"), by_id[g]["size_mm"], by_id[g].get("rotation_deg"), by_id[g]["center_mm"]]
+                     for g in p.get("cuts") or [] if g in by_id], p["center_mm"] if p.get("cuts") else None]
+              for pid, p in modeled.items()}
     key = hashlib.sha256((MODELS_FORMAT + json.dumps(placed, sort_keys=True)).encode()).hexdigest()[:16]
     cached = _read_json(d / "models.json")
     if cached and cached.get("key") == key:
@@ -335,7 +340,8 @@ def session_models(sid: str) -> dict[str, Any]:
     meshes: dict[str, Any] = {}
     for pid, part in modeled.items():
         try:
-            meshes[pid] = model_kit.encode(model_kit.build(part["model"]), part)
+            cut, frame = assembly.build_part(part, by_id)
+            meshes[pid] = model_kit.encode(cut, part, frame)
         except model_kit.RecipeError:
             continue  # an edited part whose recipe no longer builds is drawn as its primitive
     out = {"key": key, "parts": meshes}

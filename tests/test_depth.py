@@ -71,3 +71,24 @@ def test_a_controls_mechanism_points_out_of_the_face_with_it():
     assert mates.face_out(anatomy) == ["thumbstick_module now points out of face_plate with thumbstick_cap"]
     assert module["size_mm"] == [17, 14, 17] and module["faces"] == "+y" and cap["faces"] == "+z"
     assert _points_out(module, 1, plate)
+
+
+def test_parts_fit_like_blocks_without_sharing_space():
+    from magneye import assembly
+    from magneye import model as M
+    shell = _part("grip_shell", (0, 0, 0), (40, 80, 40))
+    board = _part("main_pcb", (0, 10, 0), (30, 40, 4), kind="internal", shape="plate")
+    cell = _part("battery_aa", (0, 10, 2), (14, 30, 14), kind="internal", shape="cylinder")
+    button = _part("x_button", (0, 30, 20), (10, 10, 4), shape="disc")
+    anatomy = {"parts": [shell, board, cell, button]}
+    changes = assembly.resolve(anatomy)
+    # The shell holds what sits in it, in pockets; the cell gives way to the board; the outer button isn't moved.
+    assert set(shell["cuts"]) >= {"main_pcb", "x_button"} and button["center_mm"] == [0, 30, 20]
+    assert any("battery_aa moved" in c or "main_pcb moved" in c for c in changes)
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    solids = {}
+    for p in anatomy["parts"]:
+        cut, frame = assembly.build_part(p, by_id)
+        solids[p["id"]] = cut.transform(M.placement(p, frame))
+    ids = list(solids)
+    assert all((solids[a] ^ solids[b]).volume() < 1 for i, a in enumerate(ids) for b in ids[i + 1:])
