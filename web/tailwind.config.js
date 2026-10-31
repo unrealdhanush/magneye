@@ -42,7 +42,7 @@ export default {
       borderColor: { DEFAULT: 'var(--line)' },
       ringColor: { DEFAULT: 'rgb(var(--accent))' },
       minHeight: { tap: px(48) },
-      minWidth: { table: px(640) },
+      minWidth: { tap: px(48), table: px(640) },
       maxWidth: { page: px(1600) },
       // Very wide displays get a fourth column (object details beside the conversation).
       screens: { '3xl': px(2200) },

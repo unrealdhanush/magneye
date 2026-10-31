@@ -9,6 +9,7 @@ import type { Anatomy, Ground, Material, Part, Playback, Scenario, Vec3 } from '
 import { bodyBox, DEG, explodeDirection, extrudeMask, FACE, maskColor, maskShapes, partShape, pcbTexture, warpToProfile, worldScale } from './geometry'
 import { ACCENT, CULPRIT, EFFECT_GLOW, MATERIAL_FINISH, MATERIAL_LOOK } from './palette'
 import { isFrontal, photoExtent, photoRotation, spanInPhoto, startCamera } from './pose'
+import { roundAxis } from '../blueprint/draw'
 
 export const REMOVE_MS = 750
 
@@ -36,6 +37,8 @@ const ASSEMBLE_TOTAL_MS = 900
 const ARRIVAL_FLASH_MS = 320
 // Tone mapping compresses bright values, so glows are driven a little harder to read as clearly as before.
 const GLOW_GAIN = 1.5
+const PIVOTS = /stick|lever|joystick|trigger|pedal|rocker|toggle/i
+const ROUND_SHAPES = ['cylinder', 'disc', 'ring', 'cone', 'capsule', 'coil', 'gear', 'spiral']
 const PULSE = new THREE.Color(EFFECT_GLOW.flow).multiplyScalar(1.6)
 
 /** Registry of each part's moving group, so pulses and labels can find parts in world space. */
@@ -286,7 +289,7 @@ function useStaggeredExplode(explode: number, assembleAt: number | null, delay: 
   }
 }
 
-function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl, assembleAt, delay, models }:
+function PartMesh({ part, s, maxLayer, registry, explode, xray, playback, focusIds, selectedId, onSelect, anatomy, ground, imageUrl, assembleAt, delay, models }:
   ViewerProps & { part: Part; s: number; maxLayer: number; registry: Registry; delay: number }) {
   const mover = useRef<THREE.Group>(null)
   const spinner = useRef<THREE.Group>(null)
@@ -326,9 +329,21 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       const mine = steps.findIndex((st, i) => st.part_id === part.id && i === index)
       if (mine >= 0 && !done) {
         const st = steps[mine], w = Math.sin(progress * Math.PI)
-        switch (st.effect) {
+        // Sticks and levers pivot; older scenarios asked them to rotate or slide, which spun or shot them sideways.
+        const effect = (st.effect === 'rotate' || st.effect === 'slide') && PIVOTS.test(`${part.id} ${part.name}`) ? 'tilt' : st.effect
+        switch (effect) {
           case 'press': tmp.pos.addScaledVector(dir.clone().normalize(), -0.06 * w); glow = 0.8; break
-          case 'rotate': sp.rotation.z = progress * Math.PI * 2; glow = 0.6; break
+          case 'tilt': {
+            // Rock round the pivot in a small circle, as a stick being pushed around does.
+            const a = progress * Math.PI * 2
+            sp.rotation.x = 0.32 * w * Math.sin(a); sp.rotation.z = 0.32 * w * Math.cos(a); glow = 0.6; break
+          }
+          case 'rotate': {
+            // Turn about the part's own axis: the round axis of a wheel, knob or gear, else its up axis.
+            const axis = ROUND_SHAPES.includes(part.shape) ? roundAxis(part.shape, part.size_mm) : 1
+            sp.rotation.set(0, 0, 0)
+            sp.rotation[(['x', 'y', 'z'] as const)[axis]] = progress * Math.PI * 2; glow = 0.6; break
+          }
           case 'slide': tmp.pos.x += 0.07 * w; glow = 0.6; break
           case 'vibrate': tmp.pos.x += Math.sin(now * 0.09) * 0.012; tmp.pos.y += Math.cos(now * 0.11) * 0.012; glow = 0.7; break
           case 'heat': tmp.glow.set(EFFECT_GLOW.heat); glow = 0.4 + 0.6 * w; break
@@ -373,6 +388,8 @@ function PartMesh({ part, s, maxLayer, registry, explode, playback, focusIds, se
       if (focusIds.includes(part.id)) glow = 0.55 + 0.25 * Math.sin(now * 0.004)
       else opacity = 0.45
     }
+    // X-ray: the outside turns to glass so the internals show through it.
+    if (xray && playback.kind === 'idle' && part.kind !== 'internal' && part.id !== selectedId) opacity *= 0.12
     // Accessories are context: they fade as they slide aside so the internals hold the eye.
     if (part.kind === 'accessory') opacity *= 1 - 0.7 * clamp01(value)
     if (part.id === selectedId) { glow = Math.max(glow, 0.8); tmp.glow.set(playback.kind === 'failure' && part.id === playback.failure.culprit_part_id ? CULPRIT : ACCENT) }

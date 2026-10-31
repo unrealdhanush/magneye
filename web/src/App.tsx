@@ -7,7 +7,7 @@ import { Inspector } from './blueprint/Inspector'
 import { useAnatomyEditor } from './blueprint/useEditor'
 import { SpaceTabs, type Space } from './blueprint/SpaceTabs'
 import { StartScreen } from './ui/StartScreen'
-import { IconLayers, IconPlus, IconReset, IconXray } from './ui/icons'
+import { IconLayers, IconPlus, IconReset, IconSidebar, IconXray } from './ui/icons'
 import {
   AgentTrace, AskBar, Conversation, FailureList, ObjectCard, PartDetail, PhotoMasks, ScenarioList,
   type TraceStep, type Turn,
@@ -90,6 +90,12 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   const [playback, setPlayback] = useState<Playback>({ kind: 'idle' })
   const [explode, setExplode] = useState(0)
   const [xray, setXray] = useState(false)
+  // The right-hand column (object, chat, scenarios) slides away on wide screens to give the stage the room.
+  const [drawer, setDrawer] = useState(() => { try { return localStorage.getItem('magneye.drawer') !== 'closed' } catch { return true } })
+  const toggleDrawer = () => setDrawer(open => {
+    try { localStorage.setItem('magneye.drawer', open ? 'closed' : 'open') } catch { /* private window */ }
+    return !open
+  })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [focusIds, setFocusIds] = useState<string[]>([])
   const [assembleAt, setAssembleAt] = useState<number | null>(null)
@@ -217,7 +223,9 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
   return (
     // Phones stack everything; tablets put the stage on top with the two panels side by side below; from xl the
     // panels flank the stage and grow with the window, and 3xl splits the right panel into two columns.
-    <div className="grid gap-2 pt-2 md:grid-cols-2 xl:grid-cols-[clamp(300px,20vw,440px)_minmax(0,1fr)_clamp(340px,24vw,520px)] 3xl:grid-cols-[clamp(360px,17vw,480px)_minmax(0,1fr)_clamp(720px,32vw,960px)]">
+    <div className={`grid gap-2 pt-2 transition-[grid-template-columns] duration-300 ease-out md:grid-cols-2 ${drawer
+      ? 'xl:grid-cols-[clamp(300px,20vw,440px)_minmax(0,1fr)_clamp(340px,24vw,520px)] 3xl:grid-cols-[clamp(360px,17vw,480px)_minmax(0,1fr)_clamp(720px,32vw,960px)]'
+      : 'xl:grid-cols-[clamp(300px,20vw,440px)_minmax(0,1fr)_0px] 3xl:grid-cols-[clamp(360px,17vw,480px)_minmax(0,1fr)_0px]'}`}>
       <aside className="order-2 min-w-0 space-y-2 xl:order-1 xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1" aria-label="Input and agent trace">
         <PhotoMasks imageUrl={session.image_url} originalUrl={session.original_url} ground={ground} anatomy={anatomy} selectedId={selectedId} onSelect={setSelectedId} />
         <AgentTrace steps={steps} thinking={thinking} />
@@ -298,11 +306,17 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
             <SpaceTabs space={space} onChange={switchSpace} />
           </div>
         )}
+        <button type="button" onClick={toggleDrawer} aria-expanded={drawer} aria-controls="drawer"
+          title={drawer ? 'Hide the conversation panel' : 'Show the conversation panel'}
+          className={`glass press absolute right-3 top-2 z-10 hidden min-h-tap min-w-tap items-center justify-center gap-1 rounded-lg px-1.5 text-subheadline xl:inline-flex ${drawer ? 'text-ink' : 'text-accent-text'}`}>
+          <IconSidebar className="h-2.5 w-2.5" />
+          <span className="sr-only sm:not-sr-only">{drawer ? 'Hide chat' : 'Chat'}</span>
+        </button>
       </section>
 
       {/* Below 3xl the two groups dissolve (display: contents) and their items interleave by order: object, chat,
           then the rest. On 3xl they become side-by-side columns: details on the left, the conversation on the right. */}
-      <aside className="order-3 flex min-w-0 flex-col gap-3 xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1 3xl:grid 3xl:grid-cols-2 3xl:items-start"
+      <aside id="drawer" className={`order-3 flex min-w-0 flex-col gap-3 transition-[opacity,transform] duration-300 ease-out xl:h-[calc(100vh-112px)] xl:overflow-y-auto xl:pe-1 3xl:grid 3xl:grid-cols-2 3xl:items-start ${drawer ? '' : 'xl:invisible xl:translate-x-4 xl:opacity-0'}`}
         aria-label="Object, conversation and scenarios">
         <div className="contents 3xl:block 3xl:space-y-3">
           {anatomy && <div className="order-1"><ObjectCard anatomy={anatomy} /></div>}

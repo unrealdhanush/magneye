@@ -30,6 +30,16 @@ export const IconWarn = (p: SVGProps<SVGSVGElement>) => (
 export const IconCheck = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12 2.5 2.5 4.5-5" /></svg>
 )
+export const IconBrain = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M12 5.5a3 3 0 0 0-5.6-1.4A3 3 0 0 0 4 8.6a3.2 3.2 0 0 0 .3 5.6A3 3 0 0 0 7.5 19a3 3 0 0 0 4.5.5z" />
+    <path d="M12 5.5a3 3 0 0 1 5.6-1.4A3 3 0 0 1 20 8.6a3.2 3.2 0 0 1-.3 5.6 3 3 0 0 1-3.2 4.8 3 3 0 0 1-4.5.5z" />
+    <path d="M12 5.5V19.5M8.5 9.5a2 2 0 0 1 2 2M15.5 9.5a2 2 0 0 0-2 2" />
+  </svg>
+)
+export const IconSidebar = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M14.5 5v14" /></svg>
+)
 export const IconX = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M6 6l12 12M18 6 6 18" /></svg>
 )

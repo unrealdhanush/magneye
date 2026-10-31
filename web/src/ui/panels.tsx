@@ -3,7 +3,7 @@ import { ThinkingOrb, type OrbState } from 'thinking-orbs'
 import { startRecording, type Recorder } from '../audio'
 import type { Agent, Anatomy, Failure, Ground, Part, Scenario } from '../types'
 import { MATERIAL_LOOK } from '../viewer/palette'
-import { IconArrow, IconCheck, IconChevron, IconMic, IconPlay, IconStop, IconWarn } from './icons'
+import { IconArrow, IconBrain, IconCheck, IconChevron, IconMic, IconPlay, IconStop, IconWarn } from './icons'
 import { Markdown } from './Markdown'
 
 /** One row of the agent trace: a tool call with its live status, or a note the agent wrote between turns. */
@@ -12,6 +12,7 @@ export interface TraceStep { agent: Agent; tool: string; status: 'running' | 'do
 const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }> = {
   research: { label: 'Research teardowns', model: 'Wonder · web', orb: 'searching' },
   reference_views: { label: 'Find other angles', model: 'Wonder · Commons', orb: 'searching' },
+  print_refs: { label: 'Find printable models', model: 'Wonder · Printables', orb: 'searching' },
   draft: { label: 'Draft anatomy', model: 'Muse Wonder', orb: 'solving' },
   cache: { label: 'Reuse anatomy', model: 'cache', orb: 'working' },
   find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },
@@ -79,7 +80,7 @@ export function AgentTrace({ steps, thinking }: { steps: TraceStep[]; thinking: 
               <span className="grid h-2.5 w-2.5 shrink-0 place-items-center pt-px">
                 {st.status === 'running' ? <ThinkingOrb state={meta.orb} size={20} aria-hidden="true" />
                   : st.status === 'done' ? <IconCheck className="h-2 w-2 text-green-text" />
-                  : st.status === 'note' ? <span className="h-1 w-1 rounded-full bg-ink/30" aria-hidden="true" />
+                  : st.status === 'note' ? <IconBrain className="h-2 w-2 text-purple-text" aria-label="Thought" />
                   : <IconWarn className="h-2 w-2 text-red-text" />}
               </span>
               <span className="min-w-0 flex-1">
@@ -198,6 +199,7 @@ const BASIS: Record<'seen' | 'documented' | 'inferred', { label: string; tone: s
   inferred: { label: 'inferred', tone: 'bg-ink/5 text-muted' },
 }
 
+const RELATION: Record<string, string> = { replica: 'Replica', fits_over: 'Fits over it', fits_into: 'Holds it' }
 const hostOf = (url: string) => url.split('//')[1]?.split('/')[0].replace(/^www\./, '') ?? url
 
 /** How much of the anatomy is seen, documented by cited sources, or inferred, plus the sources themselves. */
@@ -206,6 +208,7 @@ function Provenance({ anatomy }: { anatomy: Anatomy }) {
   for (const p of anatomy.parts) counts[p.grounded ? 'seen' : p.basis === 'documented' ? 'documented' : p.basis === 'seen' ? 'seen' : 'inferred']++
   const sources = anatomy.research?.sources ?? []
   const refs = anatomy.references ?? []
+  const printed = anatomy.print_refs ?? []
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1 font-mono text-caption2 leading-5">
@@ -237,6 +240,21 @@ function Provenance({ anatomy }: { anatomy: Anatomy }) {
             })}
           </ul>
         </div>
+      )}
+      {printed.length > 0 && (
+        <details className="text-footnote">
+          <summary className="cursor-pointer text-ink">Made to fit it ({printed.length} printable {printed.length === 1 ? 'model' : 'models'})</summary>
+          <ul className="mt-1 space-y-1">
+            {printed.map(r => (
+              <li key={r.url} className="space-y-px">
+                <a href={r.url} target="_blank" rel="noopener noreferrer" className="break-words">{r.title}</a>
+                <span className="block text-muted">
+                  {RELATION[r.relation]}{r.same_product ? '' : ' · related model'} · {r.model_size_mm.map(Math.round).join(' × ')} mm · {r.license}{r.author ? ` · ${r.author}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {sources.length > 0 && (
         <details className="text-footnote">
