@@ -58,6 +58,9 @@ def test_saving_edits_cleans_references(monkeypatch, tmp_path):
     # A save based on an older revision is refused rather than undoing the edits made since; the current one goes through.
     assert client.put("/api/sessions/s1/anatomy", json={"parts": [{**part, "id": "a"}], "base_revision": 0}).status_code == 409
     assert client.put("/api/sessions/s1/anatomy", json={"parts": [{**part, "id": "a"}], "base_revision": 1}).json()["revision"] == 2
+    camera = {"azimuth_deg": -20, "elevation_deg": 10, "roll_deg": 0}
+    assert client.put("/api/sessions/s1/anatomy", json={"parts": [{**part, "id": "a"}], "camera": camera}).json()["object"]["camera"] == camera
+    assert client.put("/api/sessions/s1/anatomy", json={"parts": [{**part, "id": "a"}], "camera": {"azimuth_deg": 1}}).status_code == 400
 
 
 def test_runs_per_hour_limit_spares_cached_and_built_sessions(monkeypatch, tmp_path):

@@ -363,7 +363,14 @@ def save_anatomy(sid: str, body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(400, f"every part needs {sorted(REQUIRED_PART_KEYS)}")
     if len({p["id"] for p in parts}) != len(parts):
         raise HTTPException(400, "part ids must be unique")
-    anatomy = A.sanitize({**current, **{k: v for k, v in body.items() if k in ("parts", "scenarios", "failures", "connections")}})
+    anatomy = {**current, **{k: v for k, v in body.items() if k in ("parts", "scenarios", "failures", "connections")}}
+    # The viewpoint the photo was taken from can be corrected along with the layout it was fitted to.
+    camera = body.get("camera")
+    if camera is not None:
+        if not (isinstance(camera, dict) and all(isinstance(camera.get(k), (int, float)) for k in ("azimuth_deg", "elevation_deg", "roll_deg"))):
+            raise HTTPException(400, "camera needs azimuth_deg, elevation_deg and roll_deg")
+        anatomy["object"] = {**anatomy["object"], "camera": {k: float(camera[k]) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}}
+    anatomy = A.sanitize(anatomy)
     anatomy["revision"] = current.get("revision", 0) + 1
     _write_json(d / "anatomy.json", anatomy)
     g = _read_json(d / "ground.json")
