@@ -22,6 +22,10 @@ CLEARANCE_MM = 0.4
 MIN_SHARE = 0.02
 MIN_VOLUME_MM3 = 8.0
 PUSH_ROUNDS = 8
+# A part is pushed at most this far at once, and this far in all; a collision that needs more is settled with a
+# groove, so a deep overlap can't shove a neighbour across the object.
+MAX_PUSH_MM = 8.0
+MAX_TRAVEL_MM = 15.0
 GAP_MM = 0.3
 # What a part is, by the last word of its id or name: these hold other parts, even inside the object.
 HOLDER_WORDS = {"shell", "housing", "case", "casing", "body", "plate", "faceplate", "cover", "frame", "chassis",
@@ -88,10 +92,12 @@ def _pushes(placed_mover: Manifold, other: Manifold) -> list[list[float]]:
     inter = placed_mover ^ other
     if inter.is_empty():
         return []
-    ib, mb = inter.bounding_box(), placed_mover.bounding_box()
+    # Clear of the other part's whole extent along the axis, not just of the overlap (which, for a part sunk inside
+    # another, would only nudge it a step at a time).
+    ob, mb = other.bounding_box(), placed_mover.bounding_box()
     moves = []
     for axis in range(3):
-        for sign, dist in ((1.0, ib[3 + axis] - mb[axis]), (-1.0, mb[3 + axis] - ib[axis])):
+        for sign, dist in ((1.0, ob[3 + axis] - mb[axis]), (-1.0, mb[3 + axis] - ob[axis])):
             step = [0.0, 0.0, 0.0]
             step[axis] = sign * (dist + GAP_MM)
             moves.append(step)
@@ -114,6 +120,7 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
     changes: list[str] = []
     for p in parts:
         p.pop("cuts", None)
+    start = {p["id"]: list(p["center_mm"]) for p in parts}
     for _ in range(PUSH_ROUNDS):
         placed = {p["id"]: _placed(p, own[p["id"]]) for p in parts}
         volume = {pid: s.volume() for pid, s in placed.items()}
@@ -155,8 +162,11 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
                 # The shortest push that keeps an inner part inside the part around it (a cell stays in its bay);
                 # if none does, the two are left for a groove.
                 box = _container(mover, parts, placed) if mover["kind"] == "internal" else None
-                step = next((s for s in _pushes(placed[mover["id"]], placed[other["id"]])
-                             if box is None or _inside([c + d for c, d in zip(mover["center_mm"], s)], box)), None)
+                def allowed(s: list[float]) -> bool:
+                    to = [c + d for c, d in zip(mover["center_mm"], s)]
+                    return (max(map(abs, s)) <= MAX_PUSH_MM and float(np.linalg.norm(np.subtract(to, start[mover["id"]]))) <= MAX_TRAVEL_MM
+                            and (box is None or _inside(to, box)))
+                step = next((s for s in _pushes(placed[mover["id"]], placed[other["id"]]) if allowed(s)), None)
                 if step:
                     mover["center_mm"] = [round(c + d, 1) for c, d in zip(mover["center_mm"], step)]
                     placed[mover["id"]] = _placed(mover, own[mover["id"]])
@@ -174,7 +184,11 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
             sa, sb = placed[a["id"]], placed[b["id"]]
             if (sa ^ sb).volume() < MIN_VOLUME_MM3:
                 continue
-            host, held = (a, b) if sa.volume() >= sb.volume() else (b, a)
+            # The rest fit around what the user just placed: an unpinned part takes the groove for a pinned one.
+            if (a["id"] in pinned) != (b["id"] in pinned):
+                host, held = (b, a) if a["id"] in pinned else (a, b)
+            else:
+                host, held = (a, b) if sa.volume() >= sb.volume() else (b, a)
             host.setdefault("cuts", []).append(held["id"])
             changes.append(f"{host['id']} holds {held['id']} in a pocket")
     return list(dict.fromkeys(changes))
