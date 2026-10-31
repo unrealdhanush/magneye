@@ -20,8 +20,11 @@ from . import pose
 from .checks import _hull
 
 GRID = 96
-# Search ranges (degrees). Elevation is kept to photos taken from roughly level to straight down or slightly below.
-COARSE = {"azimuth": range(-180, 180, 30), "elevation": range(-30, 91, 15), "roll": range(-180, 180, 15)}
+# Search ranges (degrees). The photo defines the object's front, so it was taken from within 60 degrees of straight on
+# (a wider search finds side-on angles that fit a wrong layout); elevation is kept to photos taken from roughly level
+# to straight down or slightly below.
+COARSE = {"azimuth": range(-60, 61, 15), "elevation": range(-30, 91, 15), "roll": range(-180, 180, 15)}
+MAX_AZIMUTH = 60
 # How much one degree away from Wonder's estimate costs, in overlap: a mild preference that only breaks near-ties.
 PRIOR_PER_DEG = 0.0006
 MIN_GAIN = 0.03
@@ -124,7 +127,8 @@ def search(anatomy: dict[str, Any], outline: Outline) -> tuple[tuple[float, floa
     candidates = [guess] + [(a, e, r) for a in COARSE["azimuth"] for e in COARSE["elevation"] for r in COARSE["roll"]]
     best = max(candidates, key=lambda v: score(v)[0])
     for step in (10, 5):
-        around = [(best[0] + da, best[1] + de, best[2] + dr) for da in (-step, 0, step) for de in (-step, 0, step) for dr in (-step, 0, step)]
+        around = [(best[0] + da, best[1] + de, best[2] + dr) for da in (-step, 0, step) for de in (-step, 0, step) for dr in (-step, 0, step)
+                  if abs(best[0] + da) <= MAX_AZIMUTH]
         best = max(around, key=lambda v: score(v)[0])
     return best, score(best)[1]
 

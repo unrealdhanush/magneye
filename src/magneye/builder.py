@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from collections import Counter
 import json
 from typing import Any
 
 from . import anatomy as A
 from . import depth, fit, mates, meta, modeler, pose, prints, views
+from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches, pick_object
@@ -143,6 +145,8 @@ async def build(
     # The side profile only needs SAM on a reference photo, so it runs while the draft is verified.
     side = views.profile_view(picked)
     profile = asyncio.create_task(views.side_profile(side, draft["object"]["sam_prompt"])) if side else None
+    # Which photo shows the object's side (and which way it faces) is settled while the draft is verified.
+    side_search = asyncio.create_task(_find_side(picked, image, draft["object"]["sam_prompt"], model))
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "done",
                 "text": f"Drafted {draft['object']['name']} with {len(draft['parts'])} parts"})
     await emit({"type": "anatomy", "anatomy": draft})
@@ -151,6 +155,7 @@ async def build(
     if found is None:
         await emit({"type": "step", "agent": "builder", "tool": "find_in_photo", "status": "error",
                     "text": f"SAM 3.1 couldn't find “{draft['object']['sam_prompt']}”; keeping the unverified draft"})
+        side_search.cancel()
         return await _with_profile(draft, profile, emit)
     await emit({"type": "step", "agent": "builder", "tool": "find_in_photo", "status": "done",
                 "text": f"SAM 3.1 found the {draft['object']['sam_prompt']}"})
@@ -302,52 +307,73 @@ async def build(
                 else f"Kept the viewpoint; no better fit to SAM's outline was found (overlap {cover:.0%})")
     await emit({"type": "step", "agent": "builder", "tool": "fit_view", "status": "done", "text": text})
     # The front photo can't show depth; a side photo, when one was found, fits it.
-    if await _fit_depth(work, outline, picked, image, model, emit) or fitted:
+    if fitted:
         await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
+    try:
+        found_side = await side_search
+    except Exception as e:  # the side photo is a refinement; never fail the build over it
+        found_side = (None, None, f"the side photo check failed ({e})")
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
         await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed, views=picked)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
+    # The front photo can't show depth; with the parts' real shapes built, a side photo fits it.
+    await _fit_depth(work, outline, found_side, emit)
     return await _with_profile(A.sanitize(work), profile, emit)
 
 
-async def _fit_depth(work: dict[str, Any], outline: fit.Outline, picked: list[dict[str, Any]], image: bytes, model: str,
-                     emit: Emit) -> bool:
-    """Fit depth, tilt and front-to-back reach to SAM's outline in a side photo. Photo labels from the vetting vary
-    between side and back, so the likeliest few non-front photos are each asked directly whether they show a side and
-    which way it faces; the first clear one is used."""
+async def _find_side(picked: list[dict[str, Any]], image: bytes, phrase: str, model: str) -> tuple[dict[str, Any] | None, Any, str]:
+    """A reference photo that shows the object's side, which way its front points, and SAM's outline of the object in
+    it: (view, outline, note). Photo labels from the vetting vary between side and back, so the likeliest few non-front
+    photos are each asked directly whether they show a side and which way it faces; the first clear one is used."""
     order = ["left", "right", "back", "three_quarter", "other_angle", "other"]
-    candidates = sorted((v for v in picked if v["view"] in order), key=lambda v: (order.index(v["view"]), not v.get("clean")))[:3]
+    # The user's own photos first: a side shot is usually taken on purpose.
+    candidates = sorted((v for v in picked if v["view"] in order),
+                        key=lambda v: (v["origin"] != "user", order.index(v["view"]), not v.get("clean")))[:3]
     if not candidates:
-        return False
-    await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "running"})
-    edges = await asyncio.gather(*(views.front_edge(image, v["jpeg"], model) for v in candidates), return_exceptions=True)
-    side = next((v for v, e in zip(candidates, edges) if isinstance(e, str) and e in depth.AZIMUTH), None)
+        return None, None, "no photo from another side"
+    results = await asyncio.gather(*(views.front_edge(image, v["jpeg"], model) for v in candidates), return_exceptions=True)
+    edges = [r[0] if isinstance(r, tuple) else "unclear" for r in results]
+    side = next((v for v, e in zip(candidates, edges) if e in depth.AZIMUTH), None)
     if side is None:
-        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
-                    "text": f"None of {_count(len(candidates), 'photo', 'photos')} clearly shows a side; depth stays as drafted"})
-        return False
-    side["front_points"] = edges[candidates.index(side)]
+        tally = "; ".join(f"{v['title']}: " + (", ".join(f"{n} {k}" for k, n in Counter(r[1]).items()) if isinstance(r, tuple) else f"failed ({r})")
+                          for v, r in zip(candidates, results))
+        return None, None, f"none of {_count(len(candidates), 'photo', 'photos')} clearly shows a side ({tally})"
     try:
-        matches = await meta.segment(side["jpeg"], work["object"]["sam_prompt"])
+        matches = await meta.segment(side["jpeg"], phrase)
     except meta.MetaAPIError:
         matches = []
     if not matches:
-        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
-                    "text": "SAM didn't find the object in the side photo; depth stays as drafted"})
+        return None, None, "SAM didn't find the object in the side photo"
+    side["front_points"] = edges[candidates.index(side)]
+    return side, fit.Outline.from_match(pick_object(matches)), ""
+
+
+async def _fit_depth(work: dict[str, Any], outline: fit.Outline, found_side: tuple[dict[str, Any] | None, Any, str], emit: Emit) -> bool:
+    """Fit depth, tilt and front-to-back reach to the side photo, with the parts as modeled (a ring as a ring)."""
+    side, side_outline, why = found_side
+    if side is None:
+        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done", "text": f"Depth stays as drafted: {why}"})
         return False
-    found = depth.fit_depth(work, outline, fit.Outline.from_match(pick_object(matches)), side["front_points"], bool(side.get("upright")))
+    solids = {}
+    for p in work["parts"]:
+        if p.get("model"):
+            try:
+                solids[p["id"]] = M.build(p["model"])
+            except M.RecipeError:
+                pass
+    found = depth.fit_depth(work, outline, side_outline, side["front_points"], bool(side.get("upright")), solids=solids)
     if not found:
         await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
-                    "text": "Checked the depth against a side photo; no change clearly improved it without hurting the front"})
+                    "text": f"Checked the depth against {side['title']} (front to the image's {side['front_points']}); "
+                            f"no change matched it well without hurting the front"})
         return False
-    # Depth moves shift the parts in the front view too; refit the viewpoint if that helps.
-    fit.fit(work, outline)
     await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
-                "text": f"Fitted depth to a side photo (front to the image's {side['front_points']}): side overlap {found['side_before']:.0%} → {found['side_after']:.0%}, "
+                "text": f"Fitted depth to {side['title']} (front to the image's {side['front_points']}): side overlap {found['side_before']:.0%} → {found['side_after']:.0%}, "
                         f"front {found['front_before']:.0%} → {found['front_after']:.0%} ({_count(len(found['moved']), 'part', 'parts')} moved)"})
+    await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     return True
 
 

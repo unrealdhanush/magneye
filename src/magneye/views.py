@@ -268,31 +268,46 @@ async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]]
     return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
 
 
-DIRECTION_SYSTEM = """Image 0 shows an object from its front: the side facing the camera there, with the features you can see (its buttons, controls, screen, dial, lens or face). Image 1 shows the same kind of object. First decide whether image 1 shows it from one side: its front turned toward the left or right edge of the image, so you see its profile (the object may lie down). If image 1 instead looks mostly at its front, back, top or bottom, answer "not_side". Otherwise work out where those front features are in image 1: name two or three features you can see and which edge of the image each is near or faces, then decide which edge of image 1 the object's front is on. Output only JSON."""
-DIRECTION_SCHEMA = {"type": "object", "properties": {"features": {"type": "string"},
-                                                     "front_edge": {"type": "string", "enum": ["left", "right", "not_side", "unclear"]}},
-                    "required": ["features", "front_edge"]}
+DIRECTION_SYSTEM = """Image 0 shows an object from its front. Image 1 shows the same kind of object, maybe lying down.
+1. side_view: does image 1 show the object from one side (its profile, the front turned toward the left or right edge of the image)? false if it looks mostly at the front, back, top or bottom.
+2. front_features: list three to five features you can see on the front in image 0 (buttons, sticks, controls, screen, dial, lens, logo, face). For each, say which way it faces in image 1, the direction its top or face points: "left" or "right" (toward that edge of the image), "camera", "away", "up", "down", or "hidden" if you can't see it.
+Name only features that are on the front in image 0, not ones on its back or underside. Output only JSON."""
+DIRECTION_SCHEMA = {"type": "object", "properties": {
+    "side_view": {"type": "boolean"},
+    "front_features": {"type": "array", "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "faces": {"type": "string", "enum": ["left", "right", "camera", "away", "up", "down", "hidden"]}},
+        "required": ["name", "faces"]}}},
+    "required": ["side_view", "front_features"]}
 DIRECTION_VOTES = 5
 
 
-async def front_edge(image: bytes, side: bytes, model: str) -> str:
+def _edge_from(answer: dict[str, Any]) -> str:
+    """One answer's verdict: the edge most of the front features it saw face toward, if it saw a side at all."""
+    if not answer.get("side_view"):
+        return "not_side"
+    edges = [f.get("faces") for f in answer.get("front_features") or [] if isinstance(f, dict)]
+    left, right = edges.count("left"), edges.count("right")
+    return "left" if left > right else "right" if right > left else "unclear"
+
+
+async def front_edge(image: bytes, side: bytes, model: str) -> tuple[str, list[str]]:
     """Whether a photo shows the object's side and which edge its front is on: "left", "right", or "unclear" (not a
-    side view, or no agreement). Mirroring is the one thing a side photo's outline can't tell, and one answer is wrong
-    often enough to matter, so several are asked at once; answers that don't name what they saw are dropped, and only
-    a clear majority counts."""
+    side view, or no agreement). Mirroring is the one thing a side photo's outline can't tell, so the model only
+    reports facts (where the front's features show up) and the edge is worked out from them; several answers are
+    asked for at once, and only a clear majority counts. Returns the verdict and the votes behind it."""
     async def ask() -> dict[str, Any]:
         return await meta.chat_json(model=model, system=DIRECTION_SYSTEM, image_jpeg=image, more_images=[side],
-                                    user_text="Which edge of image 1 is the object's front on?", schema_name="side_direction",
+                                    user_text="Where do the front's features show up in image 1?", schema_name="side_direction",
                                     schema=DIRECTION_SCHEMA, reasoning_effort="medium", max_tokens=12000)
     answers = await asyncio.gather(*(ask() for _ in range(DIRECTION_VOTES)), return_exceptions=True)
-    votes = [a["front_edge"] for a in answers if isinstance(a, dict) and len(str(a.get("features", ""))) >= 20]
-    left, right = votes.count("left"), votes.count("right")
+    votes = [_edge_from(a) if isinstance(a, dict) else "failed" for a in answers]
+    left, right, answered = votes.count("left"), votes.count("right"), len(votes) - votes.count("failed")
     # Most answers must see a side at all; then one direction must win clearly among them.
-    if left + right < 2 or 2 * (left + right) < len(votes):
-        return "unclear"
+    if left + right < 2 or 2 * (left + right) < answered:
+        return "unclear", votes
     if max(left, right) >= 2 and min(left, right) * 2 < max(left, right):
-        return "left" if left > right else "right"
-    return "unclear"
+        return ("left" if left > right else "right"), votes
+    return "unclear", votes
 
 
 PROFILE_ROWS = 48
