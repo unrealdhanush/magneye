@@ -34,13 +34,19 @@ HEADERS = {"User-Agent": "Magneye/0.1 (https://github.com/unrealdhanush/magneye)
 FETCH_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
 PAGE_LIMIT = 600_000
 IMAGE_LIMIT = 6_000_000
-MAX_CANDIDATES = 12
-MAX_COMMONS = 6
+MAX_CANDIDATES = 16
+MAX_COMMONS = 4
+# Photos from the pages the side-photo search found.
+MAX_SIDE_PAGES = 6
+MAX_SIDE_PHOTOS = 5
 PER_PAGE = 4
 MAX_VIEWS = 3
 MAX_TOTAL = 6
 # One vetting call sees at most this many photos (the user's own plus found ones), at least MIN_FOUND found ones.
-MAX_VETTED = 14
+MAX_VETTED = 18
+# Same-product photos that might show a side, kept for the side check whatever their label.
+MAX_SIDES = 4
+SIDE_LABELS = ["left", "right", "back", "three_quarter", "other"]
 MIN_FOUND = 4
 VIEWS = ["front", "back", "left", "right", "top", "bottom", "three_quarter", "detail", "other"]
 # Views that add something the front photo cannot show, best first.
@@ -200,17 +206,33 @@ async def _download(client: httpx.AsyncClient, cand: dict[str, Any]) -> dict[str
     return {**cand, "jpeg": jpeg} if jpeg else None
 
 
-async def candidates(query: str | None, sources: list[dict[str, str]], names: list[str] | None = None) -> list[dict[str, Any]]:
+SIDE_SEARCH_SYSTEM = """You find photos for Magneye, which builds 3D models of objects. Identify the exact product in the image (maker, model and generation), then search the web for pages that show it from the side, in profile: reviews and hands-on articles with photo galleries, the maker's product pages, retailer listings with several angles, teardowns, and spec sheets with side drawings. Prefer pages with many clear photos of the product alone. Search with its names and words like "side view", "profile", "hands-on", "teardown". Reply with one line per page: its title and what it shows."""
+
+
+async def side_pages(*, image: bytes, model: str) -> list[dict[str, str]]:
+    """Web pages likely to show the product from the side, found by a search of its own (the main research looks for
+    teardowns and specs, whose pages rarely have a clean profile)."""
+    found = await meta.research(model=model, image_jpeg=image, instructions=SIDE_SEARCH_SYSTEM,
+                                question="Find pages with photos of this exact product seen from its side.")
+    return found["sources"][:MAX_SIDE_PAGES]
+
+
+async def candidates(query: str | None, sources: list[dict[str, str]], names: list[str] | None = None,
+                     side_sources: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """Downloaded candidate photos: Commons first (clean licensing), then iFixit guide photos (whole-device shots
-    from several sides), then photos from the pages research cited, taken round-robin so one big gallery cannot
-    crowd out the other pages. `names` are other short names for the product, tried on iFixit after the query."""
+    from several sides), then photos from the pages the side-photo search found, then from the pages research cited,
+    taken round-robin so one big gallery cannot crowd out the other pages. `names` are other short names for the
+    product, tried on iFixit after the query."""
     searches = list(dict.fromkeys([q for q in [query, *(names or [])] if q]))[:4]
+    side_sources = side_sources or []
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, headers=HEADERS, follow_redirects=True) as client:
         commons, fixit, *pages = await asyncio.gather(_commons(client, query) if query else asyncio.sleep(0, []),
                                                       _ifixit(client, searches) if searches else asyncio.sleep(0, []),
+                                                      *(_page_images(client, s) for s in side_sources),
                                                       *(_page_images(client, s) for s in sources[:8]))
-        web = [c for rank in zip_longest(*pages) for c in rank if c]
-        listed = [*commons[:MAX_COMMONS], *fixit, *web]
+        sided = [c for rank in zip_longest(*pages[:len(side_sources)]) for c in rank if c][:MAX_SIDE_PHOTOS]
+        web = [c for rank in zip_longest(*pages[len(side_sources):]) for c in rank if c]
+        listed = [*commons[:MAX_COMMONS], *fixit, *sided, *web]
         unique = list({c["image_url"]: c for c in reversed(listed)}.values())[::-1]
         got = await asyncio.gather(*(_download(client, c) for c in unique[:MAX_CANDIDATES + 6]))
     return [c for c in got if c][:MAX_CANDIDATES]
@@ -243,12 +265,15 @@ def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[di
 
 
 async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str,
-               own: Sequence[bytes] = (), names: list[str] | None = None) -> dict[str, Any]:
-    """Vetted reference views: {"views": [...with jpeg...], "considered": n}. More photos the user took (`own`)
-    are vetted first and come before any photo found online."""
+               own: Sequence[bytes] = (), names: list[str] | None = None,
+               side_sources: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """Vetted reference views: {"views": [...with jpeg...], "sides": [...], "considered": n}. More photos the user
+    took (`own`) are vetted first and come before any photo found online. "sides" are found photos of the same
+    product that might show a side but weren't picked (a side shot is often labelled back or three-quarter), for the
+    side check to look at."""
     mine = [{"origin": "user", "own": n, "title": f"Your photo {n + 2}", "page_url": None, "image_url": None, "jpeg": jpeg}
             for n, jpeg in enumerate(_normalize(raw) for raw in own) if jpeg]
-    found = await candidates(query, sources, names) if query or sources else []
+    found = await candidates(query, sources, names, side_sources) if query or sources or side_sources else []
     # The user's photos come first; found ones fill the rest of one vetting call, with a few always allowed in.
     cands = mine + found[:max(MIN_FOUND, MAX_VETTED - len(mine))]
     if not cands:
@@ -265,7 +290,18 @@ async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]]
         # The user took these on purpose, so they still go to the draft unvetted; found photos are dropped.
         unvetted = [{**c, "view": "other_angle", "note": "", "clean": False, "upright": False} for c in mine]
         return {"views": unvetted[:MAX_TOTAL], "considered": len(cands), "unvetted": True}
-    return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
+    verdicts = verdict.get("candidates") or []
+    picked = pick(cands, verdicts)
+    chosen = {id(v.get("jpeg")) for v in picked}
+    sides = []
+    for v in verdicts:
+        i = v.get("index", 0) - 1
+        if (0 <= i < len(cands) and cands[i]["origin"] != "user" and v.get("same_shape") and v.get("view") in SIDE_LABELS
+                and id(cands[i]["jpeg"]) not in chosen):
+            sides.append({**cands[i], "view": v["view"], "note": v.get("note", ""), "clean": bool(v.get("clean")),
+                          "upright": bool(v.get("upright"))})
+    sides.sort(key=lambda s: (SIDE_LABELS.index(s["view"]), not s["clean"]))
+    return {"views": picked, "sides": sides[:MAX_SIDES], "considered": len(cands)}
 
 
 DIRECTION_SYSTEM = """Image 0 shows an object from its front. Image 1 shows the same kind of object, maybe lying down.

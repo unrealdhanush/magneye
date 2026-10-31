@@ -58,11 +58,13 @@ ROUND = ("cylinder", "disc", "ring", "cone", "capsule", "coil", "gear", "spiral"
 # Parts that touched before the fit should still touch after it: each pair pulled apart costs up to this much overlap.
 CONTACT_GAP_MM = 3.0
 CONTACT_COST = 0.15
+# Groups that touched may drift apart by at most this much, whatever the outline gains: nothing floats free.
+MAX_PARTING_MM = 8.0
 MIN_GAIN = 0.05
 # A fit is kept only when it matches the side well. Real shapes match a correct layout less tightly than boxes can
 # be twisted to (a photo is never a pure profile), so they get their own bar.
 MIN_SIDE = 0.75
-MIN_SIDE_SHAPES = 0.55
+MIN_SIDE_SHAPES = 0.5
 MAX_FRONT_LOSS = 0.03
 PASSES = 2
 
@@ -282,15 +284,22 @@ def fit_depth(anatomy: dict[str, Any], front: Outline, side: Outline, front_poin
     # Groups that touch before the fit (any of their parts within the gap) should still touch after it; a group
     # moves as one, so each pair is judged by its closest parts.
     keys = list(members_of)
-    def group_gap(ps: list[dict[str, Any]], a: str, b: str) -> float:
+    def any_gap(ps: list[dict[str, Any]], a: str, b: str) -> float:
         return min(_gap(ps[index[x]], ps[index[y]]) for x in members_of[a] for y in members_of[b])
-    contacts = [(a, b) for i, a in enumerate(keys) for b in keys[i + 1:] if group_gap(parts, a, b) <= CONTACT_GAP_MM]
+
+    def group_gap(ps: list[dict[str, Any]], a: str, b: str) -> float:
+        # Each group's main part to the other group, so a long cable riding along can't keep a floating group
+        # "touching".
+        return max(min(_gap(ps[index[a]], ps[index[y]]) for y in members_of[b]),
+                   min(_gap(ps[index[b]], ps[index[x]]) for x in members_of[a]))
+    contacts = [(a, b) for i, a in enumerate(keys) for b in keys[i + 1:] if any_gap(parts, a, b) <= CONTACT_GAP_MM]
+    seated = {(a, b): group_gap(parts, a, b) for a, b in contacts}
 
     # The front photo can't judge depth or tilt, and its viewpoint was estimated for the drafted layout, so the search
     # goes by the side photo alone; the front's viewpoint is refitted at the end, where the gate makes sure the front
     # didn't suffer.
     def score(ps: list[dict[str, Any]]) -> float:
-        apart = sum(min(max(group_gap(ps, a, b) - CONTACT_GAP_MM, 0.0) / 10.0, 1.0) for a, b in contacts)
+        apart = sum(min(max(group_gap(ps, a, b) - seated[a, b] - CONTACT_GAP_MM, 0.0) / 10.0, 1.0) for a, b in contacts)
         return _overlap(ps, cam, side, shapes) - CONTACT_COST * apart
 
     best, best_score = parts, score(parts)
@@ -322,6 +331,8 @@ def fit_depth(anatomy: dict[str, Any], front: Outline, side: Outline, front_poin
                             or (o.get("stretch", 1.0) != 1.0 and solids and members[0] in solids)):
                         continue
                     trial = move(base, members, **o)
+                    if any(group_gap(trial, a, b) > seated[a, b] + MAX_PARTING_MM for a, b in contacts if key in (a, b)):
+                        continue
                     if key in in_front or (anchor and in_front):
                         placed = {q["id"]: q for q in trial}
                         if any(placed[k]["center_mm"][2] < placed[body]["center_mm"][2] for k in in_front):

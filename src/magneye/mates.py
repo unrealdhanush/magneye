@@ -198,7 +198,8 @@ def face_out(anatomy: dict[str, Any]) -> list[str]:
     for a, (q, t, out) in controls.items():
         control = by_id[a]
         for m in parts:
-            if m["id"] in controls or m in plates or m is control:
+            # A mechanism is about its control's size; a board under every button belongs to none of them.
+            if m["id"] in controls or m in plates or m is control or max(m["size_mm"]) > MECHANISM_SCALE * max(control["size_mm"]):
                 continue
             kind = linked.get(frozenset((a, m["id"])))
             if kind != "mechanical":
@@ -214,6 +215,7 @@ def face_out(anatomy: dict[str, Any]) -> list[str]:
 
 
 SEAT_OVERLAP = 0.3
+MECHANISM_SCALE = 2.5
 
 
 def _seat_behind(m: dict[str, Any], axis: int, control: dict[str, Any], out: np.ndarray) -> bool:

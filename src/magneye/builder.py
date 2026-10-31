@@ -60,19 +60,32 @@ async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dic
     return found if found["text"] else None
 
 
+async def _side_pages(image: bytes, model: str) -> list[dict[str, str]]:
+    """Pages found by the side-photo search; [] if it fails (it only adds candidates)."""
+    try:
+        return await views.side_pages(image=image, model=model)
+    except meta.MetaAPIError:
+        return []
+
+
 async def _views(*, image: bytes, own: list[bytes], query: str | None, sources: list[dict[str, str]], emit: Emit,
-                 model: str, names: list[str] | None = None) -> list[dict[str, Any]]:
-    """Vetted photos of the same product from other angles, the user's own extra photos first; [] when none turn up."""
-    if not query and not sources and not own:
+                 model: str, names: list[str] | None = None, side_sources: list[dict[str, str]] | None = None,
+                 sides: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Vetted photos of the same product from other angles, the user's own extra photos first; [] when none turn up.
+    Found photos that might show a side but weren't picked are added to `sides`."""
+    if not query and not sources and not own and not side_sources:
         return []
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "running"})
     try:
-        found = await views.find(image=image, query=query, sources=sources, model=model, own=own, names=names)
+        found = await views.find(image=image, query=query, sources=sources, model=model, own=own, names=names,
+                                 side_sources=side_sources)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
                     "text": f"Reference photos unavailable ({e}); building from the one photo"})
         return []
     picked = found["views"]
+    if sides is not None:
+        sides.extend(found.get("sides") or [])
     if found.get("unvetted"):
         await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
                     "text": f"Couldn't check the photos; using your {_count(len(picked), 'photo', 'photos')} as they are"})
@@ -119,15 +132,19 @@ async def build(
     *, image: bytes, prompt: str, emit: Emit, model: str, reasoning: str, cache: SegmentCache, max_turns: int = 6,
     own: list[bytes] | None = None,
 ) -> dict[str, Any]:
+    # Pages showing the product from the side are searched for alongside the research (a profile is what pins down
+    # depth, and teardown and spec pages rarely have one).
+    side_search_pages = asyncio.create_task(_side_pages(image, model))
     research = await _research(image=image, prompt=prompt, emit=emit, model=model)
     query, print_queries = None, []
     if research:
         research["text"], query = A.photo_query(research["text"])
         research["text"], print_queries = A.printables_queries(research["text"])
     # Other photos of the product and printable models made for it are found side by side.
+    sides: list[dict[str, Any]] = []
     picked, printed = await asyncio.gather(
         _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [], emit=emit, model=model,
-               names=print_queries),
+               names=print_queries, side_sources=await side_search_pages, sides=sides),
         _prints(image=image, queries=print_queries, emit=emit, model=model))
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
@@ -146,7 +163,7 @@ async def build(
     side = views.profile_view(picked)
     profile = asyncio.create_task(views.side_profile(side, draft["object"]["sam_prompt"])) if side else None
     # Which photo shows the object's side (and which way it faces) is settled while the draft is verified.
-    side_search = asyncio.create_task(_find_side(picked, image, draft["object"]["sam_prompt"], model))
+    side_search = asyncio.create_task(_find_side(picked, sides, image, draft["object"]["sam_prompt"], model))
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "done",
                 "text": f"Drafted {draft['object']['name']} with {len(draft['parts'])} parts"})
     await emit({"type": "anatomy", "anatomy": draft})
@@ -313,6 +330,10 @@ async def build(
         found_side = await side_search
     except Exception as e:  # the side photo is a refinement; never fail the build over it
         found_side = (None, None, f"the side photo check failed ({e})")
+    # A side photo found online that wasn't among the picked views is shown to the modeler and cited too.
+    if found_side[0] is not None and not any(v is found_side[0] for v in picked):
+        picked = [*picked, found_side[0]]
+        work.setdefault("references", []).append(views.cite(found_side[0]))
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
         await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed, views=picked)
@@ -324,19 +345,23 @@ async def build(
     return await _with_profile(A.sanitize(work), profile, emit)
 
 
-async def _find_side(picked: list[dict[str, Any]], image: bytes, phrase: str, model: str) -> tuple[dict[str, Any] | None, Any, str]:
+async def _find_side(picked: list[dict[str, Any]], sides: list[dict[str, Any]], image: bytes, phrase: str, model: str
+                     ) -> tuple[dict[str, Any] | None, Any, str]:
     """A reference photo that shows the object's side, which way its front points, and SAM's outline of the object in
     it: (view, outline, note). Photo labels from the vetting vary between side and back, so the likeliest few non-front
-    photos are each asked directly whether they show a side and which way it faces; the first clear one is used."""
+    photos are each asked directly whether they show a side and which way it faces; the one the answers agree on most
+    is used."""
     order = ["left", "right", "back", "three_quarter", "other_angle", "other"]
-    # The user's own photos first: a side shot is usually taken on purpose.
-    candidates = sorted((v for v in picked if v["view"] in order),
-                        key=lambda v: (v["origin"] != "user", order.index(v["view"]), not v.get("clean")))[:3]
+    # The user's own photos first (a side shot is usually taken on purpose), then found ones labelled as sides.
+    candidates = sorted((v for v in [*picked, *sides] if v["view"] in order),
+                        key=lambda v: (v["origin"] != "user", order.index(v["view"]), not v.get("clean")))[:4]
     if not candidates:
         return None, None, "no photo from another side"
     results = await asyncio.gather(*(views.front_edge(image, v["jpeg"], model) for v in candidates), return_exceptions=True)
     edges = [r[0] if isinstance(r, tuple) else "unclear" for r in results]
-    side = next((v for v, e in zip(candidates, edges) if e in depth.AZIMUTH), None)
+    # The most unanimous wins: a real profile gets every vote, an angled shot only some.
+    clear = [(r[1].count(e), -i) for i, (r, e) in enumerate(zip(results, edges)) if e in depth.AZIMUTH]
+    side = candidates[-max(clear)[1]] if clear else None
     if side is None:
         tally = "; ".join(f"{v['title']}: " + (", ".join(f"{n} {k}" for k, n in Counter(r[1]).items()) if isinstance(r, tuple) else f"failed ({r})")
                           for v, r in zip(candidates, results))
