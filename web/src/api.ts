@@ -1,7 +1,8 @@
 import type { AgentEvent, Anatomy, Session } from './types'
 
 export class HttpError extends Error {
-  constructor(readonly status: number, message: string) { super(message) }
+  readonly status: number
+  constructor(status: number, message: string) { super(message); this.status = status }
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
