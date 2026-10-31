@@ -16,6 +16,7 @@ import numpy as np
 from manifold3d import Manifold
 
 from . import model as M
+from . import pose
 
 CLEARANCE_MM = 0.4
 # Overlaps smaller than this share of the smaller part, or this volume, are contact, not fusion.
@@ -61,10 +62,17 @@ def _grown(solid: Manifold, by: float) -> Manifold:
     return out
 
 
+ROUND = ("cylinder", "disc", "ring", "cone", "capsule", "coil", "gear", "spiral", "torus")
+# Outer skins: thin covering parts. They hold the controls set into them, never inner parts, which belong behind.
+SKIN_WORDS = {"plate", "faceplate", "cover", "panel", "lid", "door", "deck", "bezel"}
+
+
 def holder(a: dict[str, Any], b: dict[str, Any], va: float, vb: float) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """(holder, held) when one of two overlapping parts holds the other, else None (they are peers). A part whose
     name says it holds things (a shell, plate, caddy...) holds one that doesn't; between two such, the bigger holds
     the smaller. Otherwise an outer part holds an inner one much smaller than itself (a shell around a board)."""
+    if (_skin(a) and b["kind"] == "internal") or (_skin(b) and a["kind"] == "internal"):
+        return None
     named = lambda p: _kind_word(p) in HOLDER_WORDS
     if named(a) != named(b):
         return (a, b) if named(a) else (b, a)
@@ -74,6 +82,12 @@ def holder(a: dict[str, Any], b: dict[str, Any], va: float, vb: float) -> tuple[
     if big["kind"] != "internal" and small["kind"] == "internal" and vbig >= OUTER_HOLDS * vsmall:
         return big, small
     return None
+
+
+def _skin(p: dict[str, Any]) -> bool:
+    """An outer skin: named as one, or an outer part that is thin and flat (a ring is thin too, but it's a band)."""
+    return _kind_word(p) in SKIN_WORDS or (p["kind"] != "internal" and p["shape"] not in ROUND
+                                           and sorted(p["size_mm"])[0] <= 0.35 * sorted(p["size_mm"])[1])
 
 
 def _kind_word(p: dict[str, Any]) -> str:
@@ -87,21 +101,35 @@ def _inside(point: list[float], solid: Manifold) -> bool:
     return all(b[i] <= point[i] <= b[3 + i] for i in range(3))
 
 
-def _pushes(placed_mover: Manifold, other: Manifold) -> list[list[float]]:
-    """The moves along one axis, either way, that take the mover out of `other` (plus a hair), shortest first."""
-    inter = placed_mover ^ other
-    if inter.is_empty():
-        return []
-    # Clear of the other part's whole extent along the axis, not just of the overlap (which, for a part sunk inside
-    # another, would only nudge it a step at a time).
-    ob, mb = other.bounding_box(), placed_mover.bounding_box()
+def _normal(p: dict[str, Any]) -> np.ndarray:
+    """A part's thinnest own axis in the object frame: the way a plate or board faces."""
+    frame = np.array(pose.part_rotation(p.get("rotation_deg") or [0, 0, 0]))
+    return frame[:, int(np.argmin(p["size_mm"]))]
+
+
+def _pushes(mover: dict[str, Any], other: dict[str, Any], placed_mover: Manifold, placed_other: Manifold,
+            inward: bool) -> list[list[float]]:
+    """The moves that take the mover clear of the other part, shortest first, each found by sliding the real solid
+    (boxes overstate a tilted plate's depth): along the object's axes and along either part's facing direction (a
+    board slides off a plate along their normals). `inward` keeps only moves toward the object's centre, so an inner
+    part caught in an outer skin goes behind it, never out through it."""
+    directions = [np.eye(3)[i] * s for i in range(3) for s in (1, -1)]
+    directions += [n * s for n in (_normal(mover), _normal(other)) for s in (1, -1)]
+    centre = np.array(mover["center_mm"], float)
     moves = []
-    for axis in range(3):
-        for sign, dist in ((1.0, ob[3 + axis] - mb[axis]), (-1.0, mb[3 + axis] - ob[axis])):
-            step = [0.0, 0.0, 0.0]
-            step[axis] = sign * (dist + GAP_MM)
-            moves.append(step)
-    return sorted(moves, key=lambda s: max(map(abs, s)))
+    for d in directions:
+        if inward and float(d @ -centre) < 0:
+            continue
+        def clear(dist: float) -> bool:
+            return (placed_mover.translate((d * dist).tolist()) ^ placed_other).volume() < MIN_VOLUME_MM3
+        if not clear(MAX_PUSH_MM):
+            continue
+        lo, hi = 0.0, MAX_PUSH_MM
+        for _ in range(7):
+            mid = (lo + hi) / 2
+            lo, hi = (lo, mid) if clear(mid) else (mid, hi)
+        moves.append([round(float(v), 2) for v in d * (hi + GAP_MM)])
+    return sorted(moves, key=lambda s: float(np.linalg.norm(s)))
 
 
 def _container(mover: dict[str, Any], parts: list[dict[str, Any]], placed: dict[str, Manifold]) -> Manifold | None:
@@ -164,13 +192,14 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
                 box = _container(mover, parts, placed) if mover["kind"] == "internal" else None
                 def allowed(s: list[float]) -> bool:
                     to = [c + d for c, d in zip(mover["center_mm"], s)]
-                    return (max(map(abs, s)) <= MAX_PUSH_MM and float(np.linalg.norm(np.subtract(to, start[mover["id"]]))) <= MAX_TRAVEL_MM
+                    return (float(np.linalg.norm(s)) <= MAX_PUSH_MM + GAP_MM and float(np.linalg.norm(np.subtract(to, start[mover["id"]]))) <= MAX_TRAVEL_MM
                             and (box is None or _inside(to, box)))
-                step = next((s for s in _pushes(placed[mover["id"]], placed[other["id"]]) if allowed(s)), None)
+                inward = mover["kind"] == "internal" and other["kind"] != "internal"
+                step = next((s for s in _pushes(mover, other, placed[mover["id"]], placed[other["id"]], inward) if allowed(s)), None)
                 if step:
                     mover["center_mm"] = [round(c + d, 1) for c, d in zip(mover["center_mm"], step)]
                     placed[mover["id"]] = _placed(mover, own[mover["id"]])
-                    changes.append(f"{mover['id']} moved {max(map(abs, step)):.0f} mm out of {other['id']}")
+                    changes.append(f"{mover['id']} moved {float(np.linalg.norm(step)):.0f} mm out of {other['id']}")
                     moved = True
         if not moved:
             break
@@ -184,9 +213,14 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
             sa, sb = placed[a["id"]], placed[b["id"]]
             if (sa ^ sb).volume() < MIN_VOLUME_MM3:
                 continue
-            # The rest fit around what the user just placed: an unpinned part takes the groove for a pinned one.
+            # The rest fit around what the user just placed: an unpinned part takes the groove for a pinned one. An
+            # outer skin is never cut for an inner part (its surface would open); the inner part takes the groove.
             if (a["id"] in pinned) != (b["id"] in pinned):
                 host, held = (b, a) if a["id"] in pinned else (a, b)
+            elif _skin(a) and b["kind"] == "internal":
+                host, held = b, a
+            elif _skin(b) and a["kind"] == "internal":
+                host, held = a, b
             else:
                 host, held = (a, b) if sa.volume() >= sb.volume() else (b, a)
             host.setdefault("cuts", []).append(held["id"])
