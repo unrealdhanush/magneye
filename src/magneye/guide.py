@@ -9,7 +9,7 @@ from typing import Any
 from PIL import Image
 
 from . import anatomy as A
-from . import meta
+from . import assembly, meta
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .ground import SegmentCache
 
@@ -132,6 +132,8 @@ async def respond(
         return ToolResult("Question shown. Wait for the user's reply.", "Asked you a question", stop=True)
 
     async def changed(part_ids: list[str]) -> None:
+        # The parts still fit together: the ones just edited stay put, the rest give way or take grooves.
+        assembly.resolve(anatomy, set(part_ids))
         anatomy["revision"] = anatomy.get("revision", 0) + 1
         await emit({"type": "anatomy", "anatomy": anatomy})
         await emit({"type": "action", "action": {"type": "highlight", "part_ids": part_ids}})

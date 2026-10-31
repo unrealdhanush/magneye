@@ -41,7 +41,14 @@ export function useAnatomyEditor(sid: string, latest: MutableRefObject<{ anatomy
     setSaving('saving')
     const base = Math.max(serverRevision.current, latest.current.anatomy?.revision ?? 0)
     try {
-      serverRevision.current = (await api.saveAnatomy(sid, a, base)).revision ?? base + 1
+      const saved = await api.saveAnatomy(sid, a, base)
+      serverRevision.current = saved.revision ?? base + 1
+      // The server fits the parts together around the edit (neighbours give way, holders take grooves); show that
+      // unless another edit is already waiting to be saved. It isn't an undo step: undoing the edit refits again.
+      if (!pending.current && JSON.stringify(saved.parts) !== JSON.stringify(a.parts)) {
+        latest.current.anatomy = saved
+        setAnatomy(saved)
+      }
       setSaving('saved')
     } catch (e) {
       if (!(e instanceof HttpError && e.status === 409)) { setSaving('error'); return }

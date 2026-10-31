@@ -377,6 +377,11 @@ def save_anatomy(sid: str, body: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(400, "camera needs azimuth_deg, elevation_deg and roll_deg")
         anatomy["object"] = {**anatomy["object"], "camera": {k: float(camera[k]) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}}
     anatomy = A.sanitize(anatomy)
+    # Parts still fit together like blocks after an edit: the ones the user just moved, resized, turned or added are
+    # pinned, and the rest give way or take grooves around them.
+    before = {p["id"]: (p["center_mm"], p["size_mm"], p.get("rotation_deg")) for p in current.get("parts", [])}
+    pinned = {p["id"] for p in anatomy["parts"] if before.get(p["id"]) != (p["center_mm"], p["size_mm"], p.get("rotation_deg"))}
+    assembly.resolve(anatomy, pinned)
     anatomy["revision"] = current.get("revision", 0) + 1
     _write_json(d / "anatomy.json", anatomy)
     g = _read_json(d / "ground.json")

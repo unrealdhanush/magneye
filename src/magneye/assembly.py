@@ -105,9 +105,10 @@ def _container(mover: dict[str, Any], parts: list[dict[str, Any]], placed: dict[
     return max(around, key=lambda s: s.volume()) if around else None
 
 
-def resolve(anatomy: dict[str, Any]) -> list[str]:
+def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """Make the parts fit together without sharing space: holders get pockets for what they hold (recorded in
-    "cuts"), peers are pushed apart. Mutates `anatomy`; returns what changed."""
+    "cuts"), peers are pushed apart. `pinned` parts (the ones the user just placed) never move: what collides with
+    them gives way, or the two get a groove. Mutates `anatomy`; returns what changed."""
     parts = anatomy["parts"]
     own = {p["id"]: _solid(p) for p in parts}
     changes: list[str] = []
@@ -146,6 +147,11 @@ def resolve(anatomy: dict[str, Any]) -> list[str]:
                 else:
                     mover = a if volume[a["id"]] <= volume[b["id"]] else b
                 other = b if mover is a else a
+                # A part the user just placed stays put: an inner neighbour gives way instead, or else a groove.
+                if mover["id"] in pinned:
+                    mover, other = other, mover
+                    if mover["id"] in pinned or mover["kind"] != "internal":
+                        continue
                 # The shortest push that keeps an inner part inside the part around it (a cell stays in its bay);
                 # if none does, the two are left for a groove.
                 box = _container(mover, parts, placed) if mover["kind"] == "internal" else None

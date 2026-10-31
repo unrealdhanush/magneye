@@ -92,3 +92,12 @@ def test_parts_fit_like_blocks_without_sharing_space():
         solids[p["id"]] = cut.transform(M.placement(p, frame))
     ids = list(solids)
     assert all((solids[a] ^ solids[b]).volume() < 1 for i, a in enumerate(ids) for b in ids[i + 1:])
+
+
+def test_a_part_the_user_just_placed_stays_put_and_its_neighbour_gives_way():
+    from magneye import assembly
+    board = _part("main_pcb", (0, 0, 0), (30, 40, 4), kind="internal", shape="plate")
+    cell = _part("battery_aa", (0, 5, 0), (14, 30, 14), kind="internal", shape="cylinder")
+    # The cell is the smaller, so it would normally move; pinned (just placed by the user), the board moves instead.
+    assembly.resolve({"parts": [board, cell]}, pinned={"battery_aa"})
+    assert cell["center_mm"] == [0, 5, 0] and board["center_mm"] != [0, 0, 0]
