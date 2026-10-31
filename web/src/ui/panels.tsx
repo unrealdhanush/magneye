@@ -13,6 +13,8 @@ const TOOL_LABEL: Record<string, { label: string; model: string; orb: OrbState }
   research: { label: 'Research teardowns', model: 'Wonder · web', orb: 'searching' },
   reference_views: { label: 'Find other angles', model: 'Wonder · Commons', orb: 'searching' },
   print_refs: { label: 'Find printable models', model: 'Wonder · Printables', orb: 'searching' },
+  face_out: { label: 'Face parts outward', model: 'checks', orb: 'solving' },
+  fit_depth: { label: 'Fit depth to a side photo', model: 'SAM 3.1', orb: 'solving' },
   draft: { label: 'Draft anatomy', model: 'Muse Wonder', orb: 'solving' },
   cache: { label: 'Reuse anatomy', model: 'cache', orb: 'working' },
   find_in_photo: { label: 'Check the photo', model: 'SAM 3.1', orb: 'searching' },

@@ -8,8 +8,12 @@ their boxes as turned by their rotation (see checks._bounds).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+import numpy as np
+
+from . import pose
 from .checks import _bounds
 
 TYPES = ("inside", "on", "coaxial", "touch", "mesh")
@@ -87,3 +91,104 @@ def apply(parts: dict[str, dict[str, Any]], mate: dict[str, Any]) -> str:
     moved = sum((x - y) ** 2 for x, y in zip(target, acen)) ** 0.5
     a["center_mm"] = target
     return f"{a['id']} {kind} {b['id']}: moved {moved:.0f} mm"
+
+
+ROUND = ("cylinder", "disc", "ring", "cone", "capsule", "coil", "gear", "spiral")
+FLAT = ("disc", "ring", "gear", "spiral")
+# Round things that roll across a face rather than face out of it (a scroll wheel lies in its well on its side).
+ROLLS = re.compile(r"wheel|roller|drum|reel|spool|pulley|crown|axle|hinge", re.I)
+FACING_TOLERANCE_DEG = 20
+
+
+def round_axis(shape: str, size: list[float]) -> int:
+    """The axis a round shape turns about, as the viewer reads it from size_mm (see web/src/blueprint/draw.ts)."""
+    if shape in FLAT:
+        return size.index(min(size))
+    score = [abs(size[i] - sum(size[j] for j in range(3) if j != i) / 2) - abs(size[(i + 1) % 3] - size[(i + 2) % 3]) for i in range(3)]
+    return score.index(max(score))
+
+
+def _distinct_axis(p: dict[str, Any]) -> int:
+    """The axis a part points along: a round part's own axis, or the box side that differs most from the other two
+    (a switch's height, a module's shaft)."""
+    return round_axis(p["shape"] if p["shape"] in ROUND else "cylinder", p["size_mm"])
+
+
+def _point_out(p: dict[str, Any], axis: int, plate: dict[str, Any], t: int, out: np.ndarray) -> bool:
+    """Point the part's `axis` along `out` (the plate's normal, outward), taking the plate's turn if it is more than
+    the tolerance off; record which own axis now points out as "faces". True if it was turned."""
+    own = np.array(pose.part_rotation(p.get("rotation_deg") or [0, 0, 0]))
+    along = float(own[:, axis] @ out)
+    if abs(along) >= np.cos(np.radians(FACING_TOLERANCE_DEG)):
+        p["faces"] = ("+" if along > 0 else "-") + "xyz"[axis]
+        return False
+    across = [p["size_mm"][i] for i in range(3) if i != axis]
+    across.insert(t, p["size_mm"][axis])
+    p["size_mm"] = across
+    p["rotation_deg"] = list(plate.get("rotation_deg") or [0, 0, 0])
+    frame = np.array(pose.part_rotation(p["rotation_deg"]))
+    p["faces"] = ("+" if float(frame[:, t] @ out) > 0 else "-") + "xyz"[t]
+    return True
+
+
+def face_out(anatomy: dict[str, Any]) -> list[str]:
+    """Turn controls that sit on a plate (buttons, caps, sticks, dials, lenses) so they face out of it, and the
+    mechanisms joined to them behind it (a thumbstick's module, a button's switch) so they point the same way, as the
+    real ones do. Each part handled gets "faces": the own axis that points out (its cap, shaft or face goes that way).
+    Modeled parts keep their turn (their recipe is built in their own frame), and things that roll across a face are
+    left alone. Returns what changed."""
+    parts = anatomy["parts"]
+    by_id = {p["id"]: p for p in parts}
+    # Thin outer parts are faces things mount on; round thin ones (a button, a ring) are the things mounted.
+    plates = [p for p in parts if p["kind"] != "internal" and p["shape"] not in ROUND
+              and sorted(p["size_mm"])[0] <= 0.35 * sorted(p["size_mm"])[1]]
+
+    def mount(p: dict[str, Any], behind: float = 0.0) -> tuple[dict[str, Any], int, np.ndarray] | None:
+        """The plate `p` sits on (or up to `behind` mm beneath): the plate, its thin axis, and its outward normal."""
+        best = None
+        for q in plates:
+            # A part mounts on a face bigger than itself (a ring around a faceplate isn't mounted on it).
+            if q is p or max(p["size_mm"]) > max(q["size_mm"]):
+                continue
+            frame = np.array(pose.part_rotation(q.get("rotation_deg") or [0, 0, 0]))
+            local = frame.T @ (np.array(p["center_mm"], float) - np.array(q["center_mm"], float))
+            t = int(np.argmin(q["size_mm"]))
+            # On the plate: near its face, and within its outline across the face.
+            if abs(local[t]) > max(p["size_mm"]) + q["size_mm"][t] + behind:
+                continue
+            if any(abs(local[i]) > q["size_mm"][i] / 2 * 1.1 for i in range(3) if i != t):
+                continue
+            # Out is the plate's side away from the object's centre (a part a little behind the plate's mid-plane
+            # still faces out); a plate through the centre goes by the side the part is on.
+            away = float(frame[:, t] @ np.array(q["center_mm"], float))
+            side = away if abs(away) > 1.0 else float(local[t])
+            if best is None or abs(local[t]) < best[0]:
+                best = (abs(local[t]), q, t, frame[:, t] * (1.0 if side >= 0 else -1.0))
+        return best and best[1:]
+
+    turned, controls = [], {}
+    for p in parts:
+        if (p["kind"] != "exterior" or p["shape"] not in ROUND or p in plates or p.get("model")
+                or ROLLS.search(f"{p['id']} {p.get('name', '')}")):
+            continue
+        found = mount(p)
+        if found is None:
+            continue
+        q, t, out = found
+        controls[p["id"]] = (q, t, out)
+        if _point_out(p, round_axis(p["shape"], p["size_mm"]), q, t, out):
+            turned.append(f"{p['id']} now faces out of {q['id']}")
+    # The mechanism a control works sits behind the face, pointing the same way (its outward side is the control's).
+    for c in anatomy.get("connections", []):
+        if c.get("kind") != "mechanical":
+            continue
+        for a, b in ((c["from"], c["to"]), (c["to"], c["from"])):
+            m = by_id.get(b)
+            if a not in controls or m is None or b in controls or m in plates or m.get("model"):
+                continue
+            q, t, out = controls[a]
+            if mount(m, behind=max(by_id[a]["size_mm"])) is None:
+                continue
+            if _point_out(m, _distinct_axis(m), q, t, out):
+                turned.append(f"{m['id']} now points out of {q['id']} with {a}")
+    return turned

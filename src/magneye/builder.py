@@ -8,10 +8,10 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import fit, meta, modeler, pose, prints, views
+from . import depth, fit, mates, meta, modeler, pose, prints, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
-from .ground import SegmentCache, object_frame, part_matches
+from .ground import SegmentCache, object_frame, part_matches, pick_object
 
 PART_SCHEMA = A.ANATOMY_SCHEMA["properties"]["parts"]["items"]
 
@@ -59,13 +59,13 @@ async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dic
 
 
 async def _views(*, image: bytes, own: list[bytes], query: str | None, sources: list[dict[str, str]], emit: Emit,
-                 model: str) -> list[dict[str, Any]]:
+                 model: str, names: list[str] | None = None) -> list[dict[str, Any]]:
     """Vetted photos of the same product from other angles, the user's own extra photos first; [] when none turn up."""
     if not query and not sources and not own:
         return []
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "running"})
     try:
-        found = await views.find(image=image, query=query, sources=sources, model=model, own=own)
+        found = await views.find(image=image, query=query, sources=sources, model=model, own=own, names=names)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "error",
                     "text": f"Reference photos unavailable ({e}); building from the one photo"})
@@ -77,10 +77,12 @@ async def _views(*, image: bytes, own: list[bytes], query: str | None, sources: 
         return picked
     where = list(dict.fromkeys({"commons": "Wikimedia Commons", "user": "your photos"}.get(v["origin"]) or _host(v["page_url"])
                                for v in picked))
+    searched = "; ".join(dict.fromkeys(q for q in [query, *(names or [])] if q))
     await emit({"type": "step", "agent": "builder", "tool": "reference_views", "status": "done",
-                "text": f"{_count(len(picked), 'reference view', 'reference views')} of {found['considered']} photos checked: "
-                        f"{', '.join(v['view'].replace('_', ' ') for v in picked)} ({', '.join(where)})" if picked
-                        else f"No usable reference views among {_count(found['considered'], 'photo', 'photos')}"})
+                "text": (f"{_count(len(picked), 'reference view', 'reference views')} of {found['considered']} photos checked: "
+                         f"{', '.join(v['view'].replace('_', ' ') for v in picked)} ({', '.join(where)})" if picked
+                         else f"No usable reference views among {_count(found['considered'], 'photo', 'photos')}")
+                        + (f". Searched for: {searched}" if searched else "")})
     return picked
 
 
@@ -122,7 +124,8 @@ async def build(
         research["text"], print_queries = A.printables_queries(research["text"])
     # Other photos of the product and printable models made for it are found side by side.
     picked, printed = await asyncio.gather(
-        _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [], emit=emit, model=model),
+        _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [], emit=emit, model=model,
+               names=print_queries),
         _prints(image=image, queries=print_queries, emit=emit, model=model))
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
@@ -283,6 +286,11 @@ async def build(
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "verify", "status": "error",
                     "text": f"Verification stopped ({e}); keeping the latest anatomy"})
+    # Buttons, caps and dials face out of the plate they sit on.
+    turned = mates.face_out(work)
+    if turned:
+        await emit({"type": "step", "agent": "builder", "tool": "face_out", "status": "done",
+                    "text": f"Turned {_count(len(turned), 'part', 'parts')} to face out of the face they sit on: " + "; ".join(turned)})
     # Fit the viewpoint and the layout to SAM's outline with numbers before giving the parts their 3D form.
     outline = fit.Outline.from_match(target)
     fitted = fit.fit(work, outline)
@@ -293,7 +301,8 @@ async def build(
         text = (f"The viewpoint already fits SAM's outline (overlap {cover:.0%})" if cover >= fit.GOOD_ENOUGH
                 else f"Kept the viewpoint; no better fit to SAM's outline was found (overlap {cover:.0%})")
     await emit({"type": "step", "agent": "builder", "tool": "fit_view", "status": "done", "text": text})
-    if fitted:
+    # The front photo can't show depth; a side photo, when one was found, fits it.
+    if await _fit_depth(work, outline, picked, image, model, emit) or fitted:
         await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
@@ -302,6 +311,44 @@ async def build(
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
     return await _with_profile(A.sanitize(work), profile, emit)
+
+
+async def _fit_depth(work: dict[str, Any], outline: fit.Outline, picked: list[dict[str, Any]], image: bytes, model: str,
+                     emit: Emit) -> bool:
+    """Fit depth, tilt and front-to-back reach to SAM's outline in a side photo. Photo labels from the vetting vary
+    between side and back, so the likeliest few non-front photos are each asked directly whether they show a side and
+    which way it faces; the first clear one is used."""
+    order = ["left", "right", "back", "three_quarter", "other_angle", "other"]
+    candidates = sorted((v for v in picked if v["view"] in order), key=lambda v: (order.index(v["view"]), not v.get("clean")))[:3]
+    if not candidates:
+        return False
+    await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "running"})
+    edges = await asyncio.gather(*(views.front_edge(image, v["jpeg"], model) for v in candidates), return_exceptions=True)
+    side = next((v for v, e in zip(candidates, edges) if isinstance(e, str) and e in depth.AZIMUTH), None)
+    if side is None:
+        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
+                    "text": f"None of {_count(len(candidates), 'photo', 'photos')} clearly shows a side; depth stays as drafted"})
+        return False
+    side["front_points"] = edges[candidates.index(side)]
+    try:
+        matches = await meta.segment(side["jpeg"], work["object"]["sam_prompt"])
+    except meta.MetaAPIError:
+        matches = []
+    if not matches:
+        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
+                    "text": "SAM didn't find the object in the side photo; depth stays as drafted"})
+        return False
+    found = depth.fit_depth(work, outline, fit.Outline.from_match(pick_object(matches)), side["front_points"], bool(side.get("upright")))
+    if not found:
+        await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
+                    "text": "Checked the depth against a side photo; no change clearly improved it without hurting the front"})
+        return False
+    # Depth moves shift the parts in the front view too; refit the viewpoint if that helps.
+    fit.fit(work, outline)
+    await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
+                "text": f"Fitted depth to a side photo (front to the image's {side['front_points']}): side overlap {found['side_before']:.0%} → {found['side_after']:.0%}, "
+                        f"front {found['front_before']:.0%} → {found['front_after']:.0%} ({_count(len(found['moved']), 'part', 'parts')} moved)"})
+    return True
 
 
 async def _with_profile(anatomy: dict[str, Any], task: asyncio.Task | None, emit: Emit) -> dict[str, Any]:

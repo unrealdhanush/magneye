@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 from . import fit, mates, meta
 from .checks import geometry_issues
+from . import depth
 from . import model as M
 from .agent import Emit, Tool, ToolResult, params, run_loop
 
@@ -22,7 +23,7 @@ Sculpt, don't stack: where the real object is one moulded body (a mouse shell, a
 
 {M.OPS_DOC}
 
-A recipe is in millimetres around the part's own centre, in the part's own frame: the frame its size_mm is measured in, which its rotation_deg then turns into place in the object (x its right, y up, z out of its front). So build the part as it is before that turn, at its real size: the built size becomes the part's size_mm. Keep each recipe under 40 nodes.
+A recipe is in millimetres around the part's own centre, in the part's own frame: the frame its size_mm is measured in, which its rotation_deg then turns into place in the object (x its right, y up, z out of its front). So build the part as it is before that turn, at its real size: the built size becomes the part's size_mm. A part with "faces" (for example "+z") is mounted on a face and points out along that own axis: build its cap, shaft, button top, lens or dial pointing that way and its base or flat back the opposite way. Keep each recipe under 40 nodes.
 
 Tools:
 - model_parts(models): build recipes for several parts in one call; each reports its built size against the part's and any error to fix.
@@ -52,6 +53,10 @@ SIDE_VIEWS = {"left": (-90.0, 0.0), "right": (90.0, 0.0), "back": (180.0, 0.0), 
 
 def side_reference(views: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """The reference photo that best shows what the main photo can't: a side, then the back, then the top."""
+    # A photo the depth fit established as a side (it knows which way the front points) beats any label.
+    known = next((v for v in views or [] if v.get("front_points") in depth.AZIMUTH and v.get("jpeg")), None)
+    if known:
+        return known
     order = list(SIDE_VIEWS)
     found = [v for v in views or [] if v.get("view") in SIDE_VIEWS and v.get("jpeg")]
     return min(found, key=lambda v: (order.index(v["view"]), not v.get("upright"))) if found else None
@@ -63,8 +68,12 @@ def _side_panels(view: dict[str, Any], anatomy: dict[str, Any], solids: dict[str
     size = 420
     ref = Image.open(io.BytesIO(view["jpeg"])).convert("RGB")
     ref.thumbnail((size, size))
-    az, el = SIDE_VIEWS[view["view"]]
-    tiles = [(f"Reference photo: {view['view']} side", ref), (f"Your models from the {view['view']} side", M.render(anatomy, solids, size=size, view=(az, el, 0.0)))]
+    # Which way the front points in the photo, once established, decides which side the models are seen from.
+    if view.get("front_points") in depth.AZIMUTH:
+        az, el, name = depth.AZIMUTH[view["front_points"]], 0.0, "side"
+    else:
+        (az, el), name = SIDE_VIEWS[view["view"]], f"{view['view']} side"
+    tiles = [(f"Reference photo: {name}", ref), (f"Your models from the {name}", M.render(anatomy, solids, size=size, view=(az, el, 0.0)))]
     sheet = Image.new("RGB", (size * 2 + 16, size + 28), (12, 14, 18))
     draw = ImageDraw.Draw(sheet)
     for i, (label, tile) in enumerate(tiles):
@@ -161,12 +170,12 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         attach = [meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}]
         if side:
             attach += [meta.image_part(_side_panels(side, anatomy, solids)), {"type": "text", "text":
-                       f"A real photo of the {side['view']} side ({side.get('note', '')}; it may be turned or tilted, so compare shapes, "
+                       f"A real photo of the {'side' if side.get('front_points') in depth.AZIMUTH else side['view'] + ' side'} ({side.get('note', '')}; it may be turned or tilted, so compare shapes, "
                        f"not orientation) next to your outer parts seen from that side. The main photo can't show depth: check here "
                        f"that each part's tilt, depth and how it joins its neighbours match the real object, and fix what doesn't."}]
         return ToolResult(f"The renders are attached in the next message.{score_text}{joins}",
                           f"Drew {_count(len(solids), 'model')} over the photo{f' · {now:.0%} overlap' if now is not None else ''}"
-                          + (f" and from the {side['view']} side" if side else ""), attach=attach)
+                          + (" and from the side" if side else ""), attach=attach)
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
@@ -230,7 +239,8 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
              params({"azimuth_deg": {"type": "number"}, "elevation_deg": {"type": "number"}, "roll_deg": {"type": "number"}}), set_camera),
         Tool("finish", "Finish modeling.", params({"summary": {"type": "string"}}), finish),
     ]
-    brief = [{k: p.get(k) for k in ("id", "name", "kind", "function", "material", "shape", "size_mm", "center_mm", "layer")} for p in anatomy["parts"]]
+    brief = [{k: p[k] for k in ("id", "name", "kind", "function", "material", "shape", "size_mm", "center_mm", "layer", "faces") if k in p}
+             for p in anatomy["parts"]]
     # Printable models made for the product show its real shell shape (a stand's cradle, a cover's inside).
     shapes = [part for r in printed or [] for part in (
         meta.image_part(r["drawing"]),

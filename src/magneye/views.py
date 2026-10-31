@@ -17,7 +17,7 @@ import re
 from collections.abc import Sequence
 from itertools import zip_longest
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from PIL import Image, ImageOps
@@ -25,6 +25,11 @@ from PIL import Image, ImageOps
 from . import meta
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+# iFixit's repair guides open with photos of the whole device from several sides, for most electronics.
+IFIXIT_API = "https://www.ifixit.com/api/2.0"
+IFIXIT_GUIDES = 4
+IFIXIT_STEPS = 2
+MAX_IFIXIT = 6
 HEADERS = {"User-Agent": "Magneye/0.1 (https://github.com/unrealdhanush/magneye)"}
 FETCH_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
 PAGE_LIMIT = 600_000
@@ -128,6 +133,39 @@ async def _commons(client: httpx.AsyncClient, query: str) -> list[dict[str, Any]
     return out
 
 
+async def _ifixit(client: httpx.AsyncClient, queries: list[str]) -> list[dict[str, Any]]:
+    """Photos from the opening steps of iFixit guides for the product (teardowns and repairs)."""
+    async def search(q: str) -> list[dict[str, Any]]:
+        try:
+            r = await client.get(f"{IFIXIT_API}/search/{quote(q)}", params={"filter": "guide", "limit": IFIXIT_GUIDES})
+            return [g for g in (r.json().get("results") or []) if isinstance(g, dict) and g.get("guideid")]
+        except (httpx.HTTPError, ValueError):
+            return []
+    found = [g for hits in await asyncio.gather(*(search(q) for q in queries)) for g in hits]
+    # Teardowns first: they open with the whole device from several sides; repair guides open on one detail.
+    found.sort(key=lambda g: g.get("type") != "teardown")
+    guides: dict[int, str] = {}
+    for g in found:
+        guides.setdefault(g["guideid"], g.get("url", ""))
+    per_guide = []
+    for gid in list(guides)[:IFIXIT_GUIDES]:
+        try:
+            g = (await client.get(f"{IFIXIT_API}/guides/{gid}")).json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        photos = []
+        for step in (g.get("steps") or [])[:IFIXIT_STEPS] if isinstance(g, dict) else []:
+            media = step.get("media") if isinstance(step, dict) else None
+            # A step holds a list of images, or a video (whose data is a dict), which is skipped.
+            data = media.get("data") if isinstance(media, dict) and media.get("type") == "image" else None
+            photos += [{"origin": "web", "title": g.get("title", "iFixit guide"), "page_url": g.get("url") or guides[gid],
+                        "image_url": m.get("large") or m.get("medium")} for m in data or []
+                       if isinstance(m, dict) and (m.get("large") or m.get("medium"))]
+        per_guide.append(photos)
+    # Taken guide by guide in turn, so one long guide can't crowd out a teardown.
+    return [c for rank in zip_longest(*per_guide) for c in rank if c][:MAX_IFIXIT]
+
+
 async def _page_images(client: httpx.AsyncClient, source: dict[str, str]) -> list[dict[str, Any]]:
     """Photos on a cited page: the preview image it declares (og:image), then the first few in its gallery."""
     got = await _fetch(client, source["url"], PAGE_LIMIT)
@@ -162,14 +200,17 @@ async def _download(client: httpx.AsyncClient, cand: dict[str, Any]) -> dict[str
     return {**cand, "jpeg": jpeg} if jpeg else None
 
 
-async def candidates(query: str | None, sources: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """Downloaded candidate photos: Commons first (clean licensing), then photos from the pages research cited,
-    taken round-robin so one big gallery cannot crowd out the other pages."""
+async def candidates(query: str | None, sources: list[dict[str, str]], names: list[str] | None = None) -> list[dict[str, Any]]:
+    """Downloaded candidate photos: Commons first (clean licensing), then iFixit guide photos (whole-device shots
+    from several sides), then photos from the pages research cited, taken round-robin so one big gallery cannot
+    crowd out the other pages. `names` are other short names for the product, tried on iFixit after the query."""
+    searches = list(dict.fromkeys([q for q in [query, *(names or [])] if q]))[:4]
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, headers=HEADERS, follow_redirects=True) as client:
-        commons, *pages = await asyncio.gather(_commons(client, query) if query else asyncio.sleep(0, []),
-                                               *(_page_images(client, s) for s in sources[:8]))
+        commons, fixit, *pages = await asyncio.gather(_commons(client, query) if query else asyncio.sleep(0, []),
+                                                      _ifixit(client, searches) if searches else asyncio.sleep(0, []),
+                                                      *(_page_images(client, s) for s in sources[:8]))
         web = [c for rank in zip_longest(*pages) for c in rank if c]
-        listed = [*commons[:MAX_COMMONS], *web]
+        listed = [*commons[:MAX_COMMONS], *fixit, *web]
         unique = list({c["image_url"]: c for c in reversed(listed)}.values())[::-1]
         got = await asyncio.gather(*(_download(client, c) for c in unique[:MAX_CANDIDATES + 6]))
     return [c for c in got if c][:MAX_CANDIDATES]
@@ -202,12 +243,12 @@ def pick(cands: list[dict[str, Any]], verdicts: list[dict[str, Any]]) -> list[di
 
 
 async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]], model: str,
-               own: Sequence[bytes] = ()) -> dict[str, Any]:
+               own: Sequence[bytes] = (), names: list[str] | None = None) -> dict[str, Any]:
     """Vetted reference views: {"views": [...with jpeg...], "considered": n}. More photos the user took (`own`)
     are vetted first and come before any photo found online."""
     mine = [{"origin": "user", "own": n, "title": f"Your photo {n + 2}", "page_url": None, "image_url": None, "jpeg": jpeg}
             for n, jpeg in enumerate(_normalize(raw) for raw in own) if jpeg]
-    found = await candidates(query, sources) if query or sources else []
+    found = await candidates(query, sources, names) if query or sources else []
     # The user's photos come first; found ones fill the rest of one vetting call, with a few always allowed in.
     cands = mine + found[:max(MIN_FOUND, MAX_VETTED - len(mine))]
     if not cands:
@@ -225,6 +266,33 @@ async def find(*, image: bytes, query: str | None, sources: list[dict[str, str]]
         unvetted = [{**c, "view": "other_angle", "note": "", "clean": False, "upright": False} for c in mine]
         return {"views": unvetted[:MAX_TOTAL], "considered": len(cands), "unvetted": True}
     return {"views": pick(cands, verdict.get("candidates") or []), "considered": len(cands)}
+
+
+DIRECTION_SYSTEM = """Image 0 shows an object from its front: the side facing the camera there, with the features you can see (its buttons, controls, screen, dial, lens or face). Image 1 shows the same kind of object. First decide whether image 1 shows it from one side: its front turned toward the left or right edge of the image, so you see its profile (the object may lie down). If image 1 instead looks mostly at its front, back, top or bottom, answer "not_side". Otherwise work out where those front features are in image 1: name two or three features you can see and which edge of the image each is near or faces, then decide which edge of image 1 the object's front is on. Output only JSON."""
+DIRECTION_SCHEMA = {"type": "object", "properties": {"features": {"type": "string"},
+                                                     "front_edge": {"type": "string", "enum": ["left", "right", "not_side", "unclear"]}},
+                    "required": ["features", "front_edge"]}
+DIRECTION_VOTES = 5
+
+
+async def front_edge(image: bytes, side: bytes, model: str) -> str:
+    """Whether a photo shows the object's side and which edge its front is on: "left", "right", or "unclear" (not a
+    side view, or no agreement). Mirroring is the one thing a side photo's outline can't tell, and one answer is wrong
+    often enough to matter, so several are asked at once; answers that don't name what they saw are dropped, and only
+    a clear majority counts."""
+    async def ask() -> dict[str, Any]:
+        return await meta.chat_json(model=model, system=DIRECTION_SYSTEM, image_jpeg=image, more_images=[side],
+                                    user_text="Which edge of image 1 is the object's front on?", schema_name="side_direction",
+                                    schema=DIRECTION_SCHEMA, reasoning_effort="medium", max_tokens=12000)
+    answers = await asyncio.gather(*(ask() for _ in range(DIRECTION_VOTES)), return_exceptions=True)
+    votes = [a["front_edge"] for a in answers if isinstance(a, dict) and len(str(a.get("features", ""))) >= 20]
+    left, right = votes.count("left"), votes.count("right")
+    # Most answers must see a side at all; then one direction must win clearly among them.
+    if left + right < 2 or 2 * (left + right) < len(votes):
+        return "unclear"
+    if max(left, right) >= 2 and min(left, right) * 2 < max(left, right):
+        return "left" if left > right else "right"
+    return "unclear"
 
 
 PROFILE_ROWS = 48
