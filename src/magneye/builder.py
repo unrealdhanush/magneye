@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import fit, meta, modeler, pose, views
+from . import fit, meta, modeler, pose, prints, views
 from .agent import Emit, Tool, ToolResult, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches
@@ -84,6 +84,25 @@ async def _views(*, image: bytes, own: list[bytes], query: str | None, sources: 
     return picked
 
 
+async def _prints(*, image: bytes, queries: list[str], emit: Emit, model: str) -> list[dict[str, Any]]:
+    """Vetted printable models made for the product; [] when none turn up or the search fails."""
+    if not queries:
+        return []
+    await emit({"type": "step", "agent": "builder", "tool": "print_refs", "status": "running"})
+    try:
+        found = await prints.find(image=image, queries=queries, model=model)
+    except Exception as e:  # a reference source going down shouldn't stop a build
+        await emit({"type": "step", "agent": "builder", "tool": "print_refs", "status": "error",
+                    "text": f"Printable models unavailable ({e}); building without them"})
+        return []
+    refs = found["refs"]
+    await emit({"type": "step", "agent": "builder", "tool": "print_refs", "status": "done",
+                "text": (f"{_count(len(refs), 'printable model', 'printable models')} of {found['considered']} checked: "
+                         + "; ".join(f"{r['title']} ({r['relation'].replace('_', ' ')})" for r in refs)) if refs
+                        else f"No printable models matched among {_count(found['considered'], 'model', 'models')}"})
+    return refs
+
+
 def _count(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
@@ -97,22 +116,27 @@ async def build(
     own: list[bytes] | None = None,
 ) -> dict[str, Any]:
     research = await _research(image=image, prompt=prompt, emit=emit, model=model)
-    query = None
+    query, print_queries = None, []
     if research:
         research["text"], query = A.photo_query(research["text"])
-    picked = await _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [],
-                          emit=emit, model=model)
+        research["text"], print_queries = A.printables_queries(research["text"])
+    # Other photos of the product and printable models made for it are found side by side.
+    picked, printed = await asyncio.gather(
+        _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [], emit=emit, model=model),
+        _prints(image=image, queries=print_queries, emit=emit, model=model))
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
-        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"], picked),
-        image_jpeg=image, more_images=[v["jpeg"] for v in picked], schema_name="anatomy", schema=A.ANATOMY_SCHEMA,
-        reasoning_effort=reasoning, max_tokens=24000,
+        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"], picked, printed),
+        image_jpeg=image, more_images=[v["jpeg"] for v in picked] + [r["drawing"] for r in printed],
+        schema_name="anatomy", schema=A.ANATOMY_SCHEMA, reasoning_effort=reasoning, max_tokens=24000,
     ))
     if research:
         # Kept with the anatomy so the guide can answer from the same references and the UI can cite them.
         draft["research"] = {"notes": research["text"][:6000], "sources": research["sources"][:12], "searches": research["searches"]}
     if picked:
         draft["references"] = [views.cite(v) for v in picked]
+    if printed:
+        draft["print_refs"] = [prints.cite(r) for r in printed]
     # The side profile only needs SAM on a reference photo, so it runs while the draft is verified.
     side = views.profile_view(picked)
     profile = asyncio.create_task(views.side_profile(side, draft["object"]["sam_prompt"])) if side else None
@@ -273,7 +297,7 @@ async def build(
         await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
-        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline)
+        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})

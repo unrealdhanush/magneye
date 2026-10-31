@@ -85,3 +85,18 @@ def test_torus_and_tube_sculpt_smooth_bodies():
     assert 35 < w <= 36.5 and 100 < h < 112
     with pytest.raises(M.RecipeError, match="one per point"):
         M.build({"op": "tube", "points": [[0, 0, 0], [0, 10, 0]], "d": [5, 5, 5]})
+
+
+def test_printable_models_parse_and_draw():
+    import struct
+    from magneye import prints
+    from magneye import anatomy as A
+    tri = [[0, 0, 0], [10, 0, 0], [0, 20, 5]]
+    binary = b"\0" * 80 + struct.pack("<I", 1) + struct.pack("<12fH", 0, 0, 1, *[c for v in tri for c in v], 0)
+    ascii_ = "solid t\n facet normal 0 0 1\n outer loop\n" + "".join(f"  vertex {x} {y} {z}\n" for x, y, z in tri) + " endloop\n endfacet\nendsolid"
+    for data in (binary, ascii_.encode()):
+        v = prints.parse_stl(data)
+        assert v.shape == (3, 3) and list(v.max(axis=0)) == [10, 20, 5]
+    assert prints.drawing(prints.parse_stl(binary)).size[0] > 600
+    brief, queries = A.printables_queries('notes\nPrintables search: rift s controller; "quest touch"; touch controller; extra')
+    assert brief == "notes" and queries == ["rift s controller", "quest touch", "touch controller"]

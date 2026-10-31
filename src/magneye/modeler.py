@@ -18,7 +18,7 @@ MODELER_SYSTEM = f"""You are Magneye's modeler. The anatomy of the object in the
 
 What to model, in this order: every exterior part (its rounded edges and corners, and the hollows, openings and cut-outs it really has: wells, ports, grilles, holes, buttons, seams), accessories, then the main internal mechanisms (gears with teeth, springs, motors, lenses, speaker drivers, cells). Skip parts under about 3 mm and anything that really is a plain box or cylinder already.
 
-Sculpt, don't stack: where the real object is one moulded body (a controller's grip running into its faceplate and ring, a mouse shell, a bottle), model that body as one smooth continuous shape: tubes and tori along its centre lines, hulls of spheres for bulges, then shell it and cut its openings. Rings and halos are tori, not polygons. Seams belong where the real part splits, not between your primitives.
+Sculpt, don't stack: where the real object is one moulded body (a mouse shell, a drill's grip running into its motor housing, a bottle, a controller's grip and ring), model that body as one smooth continuous shape: tubes and tori along its centre lines, hulls of spheres for bulges, then shell it and cut its openings. Rings and halos are tori, not polygons. Seams belong where the real part splits, not between your primitives.
 
 {M.OPS_DOC}
 
@@ -68,10 +68,24 @@ def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dic
 
 
 async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
-                outline: fit.Outline | None = None) -> int:
+                outline: fit.Outline | None = None, printed: list[dict[str, Any]] | None = None) -> int:
     """Run the modeler on `anatomy` in place (recipes go on parts as "model"). Returns how many parts it modeled."""
     parts = {p["id"]: p for p in anatomy["parts"]}
     solids: dict[str, Any] = {}
+    # The best-scoring layout seen so far: a late move that loses overlap with SAM's outline is undone at the end.
+    best: dict[str, Any] = {}
+
+    def layout() -> dict[str, Any]:
+        return {"camera": dict(anatomy["object"].get("camera") or {}),
+                "parts": {pid: (list(p["center_mm"]), p.get("rotation_deg")) for pid, p in parts.items()}}
+
+    def score() -> float | None:
+        if outline is None:
+            return None
+        s = fit.coverage(anatomy, outline)
+        if s > best.get("score", -1.0):
+            best.update(score=s, layout=layout())
+        return s
 
     async def model_parts(a: dict[str, Any]) -> ToolResult:
         report, built = [], []
@@ -108,10 +122,11 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def view_models(_: dict[str, Any]) -> ToolResult:
         sheet = _panels(photo, box, anatomy, solids)
-        score = f" Overlap with SAM's outline of the object: {fit.coverage(anatomy, outline):.0%} (higher is better)." if outline else ""
+        now = score()
+        score_text = f" Overlap with SAM's outline of the object: {now:.0%} (higher is better)." if now is not None else ""
         gaps = [i for i in geometry_issues(anatomy) if "apart; move them to touch" in i]
         joins = (" Joined parts that don't touch yet: " + " ".join(gaps)) if gaps else ""
-        return ToolResult(f"The renders are attached in the next message.{score}{joins}", f"Drew {_count(len(solids), 'model')} over the photo{score and ' · ' + score.split(': ')[1].split(' ')[0] + ' overlap'}",
+        return ToolResult(f"The renders are attached in the next message.{score_text}{joins}", f"Drew {_count(len(solids), 'model')} over the photo{f' · {now:.0%} overlap' if now is not None else ''}",
                           attach=[meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}])
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
@@ -148,9 +163,12 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
             cam = {k: float(a[k]) for k in ("azimuth_deg", "elevation_deg", "roll_deg")}
         except (KeyError, TypeError, ValueError):
             return ToolResult("Give azimuth_deg, elevation_deg and roll_deg as numbers.", "set_camera rejected", ok=False)
+        before = score()
         anatomy["object"]["camera"] = cam
         await emit({"type": "anatomy", "anatomy": anatomy})
-        return ToolResult("ok", f"Viewpoint now {cam['azimuth_deg']:g}° around, {cam['elevation_deg']:g}° up, {cam['roll_deg']:g}° rolled")
+        after = score()
+        change = f" Overlap with SAM's outline: {before:.0%} -> {after:.0%}." if before is not None and after is not None else ""
+        return ToolResult("ok." + change, f"Viewpoint now {cam['azimuth_deg']:g}° around, {cam['elevation_deg']:g}° up, {cam['roll_deg']:g}° rolled")
 
     async def finish(a: dict[str, Any]) -> ToolResult:
         return ToolResult("ok", str(a.get("summary", "Modeled")), stop=True)
@@ -174,14 +192,31 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         Tool("finish", "Finish modeling.", params({"summary": {"type": "string"}}), finish),
     ]
     brief = [{k: p.get(k) for k in ("id", "name", "kind", "function", "material", "shape", "size_mm", "center_mm", "layer")} for p in anatomy["parts"]]
+    # Printable models made for the product show its real shell shape (a stand's cradle, a cover's inside).
+    shapes = [part for r in printed or [] for part in (
+        meta.image_part(r["drawing"]),
+        {"type": "text", "text": f"Printable model \"{r['title']}\" ({r['relation'].replace('_', ' ')}), {' x '.join(f'{v:g}' for v in r['model_size_mm'])} mm: {r['note']}"})]
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": MODELER_SYSTEM},
-        {"role": "user", "content": [meta.image_part(photo), {"type": "text", "text":
+        {"role": "user", "content": [meta.image_part(photo), *shapes, {"type": "text", "text":
             f"Object: {anatomy['object']['name']} ({anatomy['object'].get('category', '')}), {anatomy['object']['dimensions_mm']} mm.\n"
-            f"Parts:\n{json.dumps(brief)}\n\nModel them."}]},
+            f"Parts:\n{json.dumps(brief)}\n\nModel them."
+            + ("\n\nThe printable models above were made by people who own this product; match the outer shell to them." if shapes else "")}]},
     ]
+    score()
     await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
                    reasoning_effort="low", until="finish", max_tokens=24000)
+    final = fit.coverage(anatomy, outline) if outline else None
+    if final is not None and best and final < best["score"] - 0.03:
+        anatomy["object"]["camera"] = best["layout"]["camera"]
+        for pid, (center, rotation) in best["layout"]["parts"].items():
+            if pid in parts:
+                parts[pid]["center_mm"] = center
+                if rotation is not None:
+                    parts[pid]["rotation_deg"] = rotation
+        await emit({"type": "anatomy", "anatomy": anatomy})
+        await emit({"type": "step", "agent": "builder", "tool": "fit_view", "status": "done",
+                    "text": f"Restored the best-fitting layout: overlap {final:.0%} → {fit.coverage(anatomy, outline):.0%}"})
     return len(solids)
 
 

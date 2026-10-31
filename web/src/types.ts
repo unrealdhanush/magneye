@@ -3,7 +3,7 @@ export type Vec3 = [number, number, number]
 export type Material =
   | 'plastic' | 'metal' | 'pcb' | 'battery' | 'rubber' | 'glass' | 'magnet' | 'fabric' | 'fluid' | 'organic' | 'ceramic' | 'other'
 export type Shape = 'box' | 'rounded_box' | 'cylinder' | 'sphere' | 'capsule' | 'disc' | 'ring' | 'cone' | 'plate' | 'coil' | 'gear' | 'spiral'
-export type Effect = 'press' | 'rotate' | 'slide' | 'vibrate' | 'glow' | 'flow' | 'heat' | 'light'
+export type Effect = 'press' | 'tilt' | 'rotate' | 'slide' | 'vibrate' | 'glow' | 'flow' | 'heat' | 'light'
 
 /** One primitive of a part drawn as several shapes; offset is from the part's centre. */
 export interface Component {
@@ -77,8 +77,23 @@ export interface Anatomy {
   research?: { notes: string; sources: { url: string; title: string }[]; searches: string[] }
   /** Photos of the same product from other angles that the draft saw. Commons photos carry an image and licence. */
   references?: Reference[]
+  /** 3D-printable models made for the product (Printables), used as measured shape references. */
+  print_refs?: PrintRef[]
   /** Depth at each height from a side view: rows top to bottom, [back, front] as fractions of the depth. */
   profile?: { view: string; page_url: string; rows: [number, number][] }
+}
+
+export interface PrintRef {
+  title: string
+  url: string
+  license: string
+  author: string
+  files: string[]
+  relation: 'replica' | 'fits_over' | 'fits_into'
+  same_product: boolean
+  object_size_mm: Vec3 | null
+  model_size_mm: Vec3
+  note: string
 }
 
 export interface Reference {

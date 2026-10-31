@@ -9,7 +9,7 @@ MATERIALS = ["plastic", "metal", "pcb", "battery", "rubber", "glass", "magnet", 
 SHAPES = ["box", "rounded_box", "cylinder", "sphere", "capsule", "disc", "ring", "cone", "plate", "coil", "gear", "spiral"]
 BASIS = ["seen", "documented", "inferred"]
 LINKS = ["mechanical", "electrical", "signal", "fluid", "optical", "thermal", "magnetic", "air"]
-EFFECTS = ["press", "rotate", "slide", "vibrate", "glow", "flow", "heat", "light"]
+EFFECTS = ["press", "tilt", "rotate", "slide", "vibrate", "glow", "flow", "heat", "light"]
 
 _vec3 = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
 _str = {"type": "string"}
@@ -126,14 +126,16 @@ Parts:
 - Attachments outside the main body that are not part of its mechanism (watch strap or bracelet, clasp, cable, stand, lanyard) are kind "accessory", layer 0. Keep them to 1 to 3 parts; the viewer frames the main body and moves accessories aside when it explodes.
 - id is snake_case and unique. shape is one of {SHAPES}; pick the closest primitive and size it realistically. material is one of {MATERIALS}.
 - layer is depth from the outside: 0 is the outer shell, then increasing as you go inward. It drives the exploded view and the disassembly order.
-- sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "thumbstick", "button", "strap", "lens"; bad: "Oculus menu button", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.
+- sam_prompt: for parts visible in this photo, the plain generic noun an open-vocabulary segmenter would use to find it: 1 to 3 words, concrete, no brand or product names, no letters or labels, no jargon (good: "button", "strap", "lens", "handle", "dial"; bad: "Canon mode dial", "battery cover R", "triangular faceplate"). null for parts hidden in this photo.
 - object.sam_prompt: the generic everyday noun for the whole object, 1 or 2 words, never a brand (good: "game controller", "camera", "kettle"; bad: "Oculus Touch VR controller").
-- components: how the part looks, as 2 to 5 primitives, so the 3D view reads as the real thing rather than one block. offset_mm is each primitive's centre relative to the part's centre, in the same axes; together they should fill the part's size_mm. Examples: thumbstick module = metal housing box + cylinder shaft + two small cylinder potentiometer drums on adjacent sides; circuit board = thin pcb plate + a few small box chips + a connector; battery = cylinder body + small metal disc terminal; trigger = curved capsule blade + small cylinder pivot. Use [] for parts that really are one simple shape (a cover, a ring, a button cap).
+- components: how the part looks, as 2 to 5 primitives, so the 3D view reads as the real thing rather than one block. offset_mm is each primitive's centre relative to the part's centre, in the same axes; together they should fill the part's size_mm. Examples: camera lens = stacked cylinders of different diameters + a front glass disc; circuit board = thin pcb plate + a few small box chips + a connector; battery = cylinder body + small metal disc terminal; drill chuck = cone + cylinder sleeve; thumbstick module = housing box + cylinder shaft + two small potentiometer drums. Use [] for parts that really are one simple shape (a cover, a ring, a button cap).
 - basis: where your knowledge of this part comes from. "seen" = visible in the photo or a reference view; "documented" = described in the reference research below (teardown, service notes, specs); "inferred" = neither, reasoned from how such objects are usually built.
 - Shapes "gear" (a toothed wheel; size_mm is diameter, diameter, thickness) and "spiral" (a flat spiral spring such as a hairspring or mainspring) exist for mechanisms; use them instead of discs where they apply.
 - confidence (0 to 1) is how sure you are this part exists as described in this specific model. Use well-known teardown knowledge when you recognise the exact product; otherwise infer from the category and say so in caveats.
 
 Connections link parts that physically or electrically interact (kind is one of {LINKS}).
+
+Effects: "tilt" for things that pivot and rock (a thumbstick, a lever, a trigger, a rocker switch); "rotate" only for things that turn round their own axis (a wheel, a knob, a dial, a gear, a rotor); "press" for buttons and keys; "slide" for sliders and latches.
 
 Scenarios (2 to 4): how the object works, as ordered chains of steps through parts, e.g. "press the trigger" -> trigger pivots -> sensor reads -> board processes -> radio transmits. Each step names a part_id, an effect from {EFFECTS}, a short label, and a duration_ms (300 to 1500). Make one scenario answer the user's prompt when it asks how something works.
 
@@ -156,14 +158,17 @@ Budget: run at most 6 searches, the most targeted first (teardown or exploded vi
 
 End with a "Sources" section: a numbered list of the pages you actually used, one per line as "N. Title — URL".
 
-Then a last line "Photo search: <maker and model in 2 to 5 words>", the query that would find photos of this exact product (for example "Rolex Daytona" or "Oculus Touch controller")."""
+Then a line "Photo search: <maker and model in 2 to 5 words>", the query that would find photos of this exact product (for example "Rolex Daytona" or "Oculus Touch controller").
+
+Then a last line "Printables search: <q1>; <q2>; <q3>": up to three short queries (2 or 3 words each) that would find 3D-printable models made for this exact product on Printables: its common names and its siblings that share the body (for example "airpods pro case; airpods pro 2" or "eos 600d; rebel t3i; canon 600d")."""
 
 
 def research_question(prompt: str) -> str:
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}\n\nResearch the object in this photo and write the blueprint brief."
 
 
-def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[str, Any]] | None = None) -> str:
+def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[str, Any]] | None = None,
+                      prints: list[dict[str, Any]] | None = None) -> str:
     reference = (f"\n\nReference research from the web (teardowns, service notes, specs). Prefer it over memory for internal "
                  f"layout, sizes and failure modes, and mark parts it describes as basis \"documented\":\n<research>\n{brief}\n</research>"
                  if brief else "")
@@ -173,15 +178,35 @@ def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[st
                       f"reference photos of the same product from other angles: {listed}. Use them for depth (z), the side profile, "
                       f"the back and parts the front photo hides; parts visible in them are basis \"seen\" but get sam_prompt null "
                       f"unless they are also visible in the user's photo.")
+    if prints:
+        first = 2 + len(views or [])
+        listed = "; ".join(
+            f"image {first + i} = \"{r['title']}\" ({r['relation'].replace('_', ' ')}{'' if r['same_product'] else ', a related model'}): "
+            f"the model measures {' x '.join(f'{v:g}' for v in r['model_size_mm'])} mm"
+            + (f" and implies the object is {' x '.join(f'{v:g}' for v in r['object_size_mm'])} mm" if r.get('object_size_mm') else "")
+            + f"; {r['note']}" for i, r in enumerate(prints))
+        reference += (f"\n\n3D-printable models made for this product, drawn from three sides with their real size: {listed}. "
+                      f"People who own the object measured these; prefer them over guesses for its overall size and the "
+                      f"shape of its outer shell.")
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}{reference}\n\nReconstruct this object's anatomy."
 
 
-def photo_query(brief: str) -> tuple[str, str | None]:
-    """Split the research brief's closing "Photo search:" line off: (brief, query or None)."""
-    m = re.search(r"^\W*Photo search:\W*(.+?)\W*$", brief, re.M | re.I)
+def _take_line(brief: str, label: str) -> tuple[str, str | None]:
+    m = re.search(rf"^\W*{label}:\W*(.+?)\W*$", brief, re.M | re.I)
     if not m:
         return brief, None
     return (brief[:m.start()] + brief[m.end():]).strip(), m.group(1).strip() or None
+
+
+def photo_query(brief: str) -> tuple[str, str | None]:
+    """Split the research brief's "Photo search:" line off: (brief, query or None)."""
+    return _take_line(brief, "Photo search")
+
+
+def printables_queries(brief: str) -> tuple[str, list[str]]:
+    """Split the research brief's "Printables search:" line off: (brief, up to three short queries)."""
+    brief, line = _take_line(brief, "Printables search")
+    return brief, [q.strip(" \"'") for q in (line or "").split(";") if q.strip(" \"'")][:3]
 
 
 ROUND = {"cylinder", "disc", "ring", "cone", "capsule", "coil", "gear", "spiral"}
