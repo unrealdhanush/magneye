@@ -29,6 +29,9 @@ FLAW = np.array([255, 40, 200], np.float32)
 MIN_SHOWING = 0.004
 # A part the fitting trimmed by more than this share was drafted bigger than the space for it.
 MIN_TRIMMED = 0.08
+# A part SAM saw in the photo that shows less than this share of itself from the photo's viewpoint is hidden behind
+# another part in the model: the parts are in the wrong order front to back.
+MIN_IN_VIEW = 0.35
 PART_DEFAULTS: dict[str, Any] = {
     "name": "New part", "kind": "exterior", "function": "", "material": "plastic", "shape": "rounded_box",
     "size_mm": [10, 10, 10], "center_mm": [0, 0, 0], "rotation_deg": [0, 0, 0], "layer": 0, "sam_prompt": None,
@@ -41,7 +44,7 @@ The renders show the finished model: outer parts in their colours, and every int
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
-A part listed as trimmed was cut down to fit inside the shell: the same causes apply. A part listed as floating doesn't touch the body: in the real object every outer part is joined to it (a ring is moulded to the head, a button sits in its plate, the head runs into the grip), so close the gap the way the real object does: move it, extend it, or reshape the part between. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
+A part listed as trimmed was cut down to fit inside the shell: the same causes apply. A part listed as floating doesn't touch the body: in the real object every outer part is joined to it (a ring is moulded to the head, a button sits in its plate, the head runs into the grip), so close the gap the way the real object does: move it, extend it, or reshape the part between. A part listed as hidden is in plain sight in the photo but covered by another part from the photo's viewpoint: the two are in the wrong order front to back (a ring drafted in front of the buttons it arcs behind), so move or turn the one that is wrong until the photo's view of the model shows what the photo shows. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
 
 Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); a part's size_mm is in its own frame before its rotation_deg. After your edits the parts are fitted together again (what you placed stays put, the rest gives way) and you get the new renders.
 
@@ -79,9 +82,11 @@ def assembled(anatomy: dict[str, Any]) -> tuple[dict[str, Manifold], list[str]]:
 
 
 def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[float, float, float],
-          size: int = TILE) -> tuple[Image.Image, dict[str, int], int, dict[str, tuple[float, float]]]:
+          size: int = TILE, look_for: frozenset[str] = frozenset()
+          ) -> tuple[Image.Image, dict[str, int], int, dict[str, tuple[float, float]], dict[str, tuple[float, str]]]:
     """A shaded render with internal parts that show painted magenta: (image, visible pixels per internal part,
-    pixels of the whole object, where each showing part's pixels centre)."""
+    pixels of the whole object, where each showing part's pixels centre, and for each part in `look_for` the share
+    of its outline in view and the part covering most of the rest)."""
     camera = dict(zip(("azimuth_deg", "elevation_deg", "roll_deg"), view))
     rot = np.array(pose.rotation({"object": {"camera": camera}}), dtype=np.float32)
     tris, cols, owners = [], [], []
@@ -99,7 +104,7 @@ def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[floa
         owners.append(np.full(len(t), i + 1))
     im = Image.new("RGB", (size, size), (21, 24, 31))
     if not tris:
-        return im, {}, 0, {}
+        return im, {}, 0, {}, {}
     tri, col, own = np.concatenate(tris), np.concatenate(cols), np.concatenate(owners)
     normal = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normal /= np.linalg.norm(normal, axis=1, keepdims=True) + 1e-9
@@ -129,7 +134,22 @@ def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[floa
         if len(xs):
             showing[p["id"]] = len(xs)
             where[p["id"]] = (float(xs.mean()), float(ys.mean()))
-    return im, showing, total, where
+    cover = {}
+    for i, p in enumerate(order):
+        if p["id"] not in look_for:
+            continue
+        alone = Image.new("1", (size, size), 0)
+        pen = ImageDraw.Draw(alone)
+        for t in xy[own == i + 1]:
+            pen.polygon([tuple(q) for q in t], fill=1)
+        outline = np.asarray(alone, bool)
+        if outline.sum() < 20:
+            continue
+        under = grid[outline]
+        others = under[(under != i + 1) & (under > 0)]
+        top = order[int(np.bincount(others).argmax()) - 1]["id"] if len(others) else ""
+        cover[p["id"]] = (float((under == i + 1).mean()), top)
+    return im, showing, total, where, cover
 
 
 TOUCH_MM = 1.5
@@ -221,8 +241,13 @@ def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], side: dict[st
         ref = Image.open(io.BytesIO(side["jpeg"])).convert("RGB")
         ref.thumbnail((TILE, TILE))
         tiles.append((f"Real photo: {side.get('view', 'side').replace('_', ' ')}", ref))
-    for name, view in views(anatomy):
-        tile, showing, total, where = _draw(anatomy, solids, view)
+    in_photo = frozenset(p["id"] for p in anatomy["parts"] if p["kind"] == "exterior" and p.get("sam_prompt"))
+    hidden = []
+    for n, (name, view) in enumerate(views(anatomy)):
+        tile, showing, total, where, cover = _draw(anatomy, solids, view, look_for=in_photo if n == 0 else frozenset())
+        hidden += [f"{pid} is in plain sight in the photo but hidden behind {by} from the photo's viewpoint (only "
+                   f"{100 * share:.0f}% of it shows): one of them is on the wrong side of the other"
+                   for pid, (share, by) in cover.items() if share < MIN_IN_VIEW and by]
         d = ImageDraw.Draw(tile)
         for pid, n in showing.items():
             share = n / max(total, 1)
@@ -239,7 +264,7 @@ def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], side: dict[st
         out.paste(tile, (x + (TILE - tile.width) // 2, y + 24 + (TILE - tile.height) // 2))
         draw.text((x + 4, y + 6), label, fill=(230, 236, 245))
     flaws = [f"{pid} shows through from " + ", ".join(f"{n} ({100 * s:.1f}% of the view)" for n, s in where_)
-             for pid, where_ in seen.items()] + trimmed + _floating(anatomy, solids)
+             for pid, where_ in seen.items()] + hidden + trimmed + _floating(anatomy, solids)
     return M.jpeg(out), flaws
 
 

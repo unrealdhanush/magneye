@@ -442,3 +442,19 @@ def test_the_review_reports_outer_parts_floating_free_of_the_body():
     found = R._floating(anatomy, solids)
     # The head touches the grip; the ring hangs 15 mm above the head (its foot at y 75, the head's top at 60).
     assert len(found) == 1 and found[0].startswith("ring floats 15 mm")
+
+
+def test_the_review_reports_a_part_seen_in_the_photo_but_hidden_in_the_model():
+    from magneye import review as R
+    part = lambda pid, c, s, sam: {"id": pid, "name": pid, "kind": "exterior", "material": "plastic", "shape": "box", "center_mm": c,
+                                   "size_mm": s, "rotation_deg": [0, 0, 0], "layer": 1, "sam_prompt": sam}
+    # The photo shows the buttons from the front, but the model puts a ring in front of them.
+    anatomy = {"object": {"name": "x", "dimensions_mm": [60, 60, 60], "camera": {}},
+               "parts": [part("body", [0, 0, 0], [40, 40, 20], "body"), part("buttons", [0, 0, 11], [20, 20, 2], "button"),
+                         part("ring", [0, 0, 20], [60, 60, 6], "ring")]}
+    photo = io.BytesIO()
+    Image.new("RGB", (200, 200), "white").save(photo, "JPEG")
+    _, flaws = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
+    hidden = [f for f in flaws if "hidden behind" in f]
+    assert any(f.startswith("buttons is in plain sight") and "behind ring" in f for f in hidden)
+    assert not any(f.startswith("ring ") for f in hidden)
