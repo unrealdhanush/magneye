@@ -39,6 +39,27 @@ class Tool:
                                                  "parameters": self.parameters}}
 
 
+def items(value: Any) -> list[dict[str, Any]]:
+    """A list argument as objects, also when the model sent it as a JSON string or sent strings inside it."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, dict):
+        value = [value]
+    out = []
+    for v in value if isinstance(value, list) else []:
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(v, dict):
+            out.append(v)
+    return out
+
+
 def params(props: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": props, "required": list(props) if required is None else required}
 

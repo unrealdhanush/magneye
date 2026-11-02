@@ -7,7 +7,7 @@ import json
 
 from PIL import Image
 
-from magneye import builder, fit, guide, meta, modeler, views
+from magneye import builder, fit, guide, ifixit, meta, modeler, review, views
 from magneye.checks import geometry_issues
 from magneye.ground import SegmentCache
 
@@ -101,6 +101,8 @@ def test_builder_verifies_and_edits(monkeypatch):
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
     monkeypatch.setattr(modeler, "model", _no_modeling)
+    monkeypatch.setattr(ifixit, "research", _no_teardown)
+    monkeypatch.setattr(review, "review", _no_review)
     monkeypatch.setattr(fit, "fit", lambda *_a, **_k: None)
     events, emit = _collect()
     photo = _photo()
@@ -221,6 +223,8 @@ def test_builder_moves_the_body_in_one_call(monkeypatch):
     monkeypatch.setattr(meta, "chat", script)
     monkeypatch.setattr(meta, "segment", _fake_segment)
     monkeypatch.setattr(modeler, "model", _no_modeling)
+    monkeypatch.setattr(ifixit, "research", _no_teardown)
+    monkeypatch.setattr(review, "review", _no_review)
     monkeypatch.setattr(fit, "fit", lambda *_a, **_k: None)
     events, emit = _collect()
     photo = _photo()
@@ -324,6 +328,14 @@ async def _no_modeling(**_):
     return 0
 
 
+async def _no_teardown(**_):
+    return None
+
+
+async def _no_review(**_):
+    return []
+
+
 def test_modeler_builds_checks_and_fixes(monkeypatch):
     anatomy = copy.deepcopy(ANATOMY)
     case = {"op": "shell", "of": {"op": "box", "size": [100, 200, 50], "radius": 8}, "wall": 3, "open": "+z"}
@@ -377,3 +389,25 @@ def test_guide_marks_every_weak_point_at_once(monkeypatch):
     action = next(e["action"] for e in events if e["type"] == "action")
     assert action["type"] == "mark_failures" and [f["culprit_part_id"] for f in action["failures"]] == ["pots", "stick"]
     assert events[-1]["text"].startswith("The **stick module**")
+
+
+def test_ifixit_markup_reads_as_plain_text():
+    text = "Remove the [link|https://x.y/z|T5 screws] ~~gently~~ near the ''trigger'', then see [https://a.b|the board|new_window=true]."
+    assert ifixit.clean(text) == "Remove the T5 screws near the trigger, then see the board."
+    g = {"title": "X Teardown", "type": "teardown", "device": "X", "url": "u", "difficulty": None, "tools": ["T5"], "parts": [],
+         "intro": "", "conclusion": "", "steps": [{"n": 1, "title": "", "photos": ["p"], "video": False,
+                                                    "lines": [(0, "black", "Open it."), (1, "red", "The battery")]}]}
+    text = ifixit.guide_text(g)
+    assert "Step 1 (1 photo):" in text and "    - [red] The battery" in text
+
+
+def test_the_review_marks_inner_parts_that_show_through():
+    from magneye import review as R
+    part = lambda pid, kind, c, s: {"id": pid, "name": pid, "kind": kind, "material": "plastic", "shape": "box", "center_mm": c,
+                                     "size_mm": s, "rotation_deg": [0, 0, 0], "layer": 1}
+    anatomy = {"object": {"name": "box", "dimensions_mm": [40, 80, 40], "camera": {}},
+               "parts": [part("shell", "exterior", [0, 0, 0], [40, 80, 40]), part("main_pcb", "internal", [0, 0, 0], [60, 50, 4])]}
+    photo = io.BytesIO()
+    Image.new("RGB", (200, 200), "white").save(photo, "JPEG")
+    _, flaws = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
+    assert any(f.startswith("main_pcb shows through") for f in flaws)

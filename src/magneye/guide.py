@@ -6,11 +6,12 @@ import io
 import json
 from typing import Any
 
+import httpx
 from PIL import Image
 
 from . import anatomy as A
-from . import assembly, meta
-from .agent import Emit, Tool, ToolResult, params, run_loop
+from . import assembly, ifixit, meta
+from .agent import Emit, Tool, ToolResult, items, params, run_loop
 from .ground import SegmentCache
 
 PART_SCHEMA = A.ANATOMY_SCHEMA["properties"]["parts"]["items"]
@@ -31,6 +32,7 @@ You act through the viewer, then explain in words:
 - set_explode(amount): 0 assembled, 1 fully apart.
 - look_closer(part_id): crop the photo around a visible part for a closer look (visible wear, damage, debris).
 - ask_user(question): ask ONE short question when the answer would change your diagnosis. Your turn ends; their reply comes next.
+- iFixit (ifixit_search, ifixit_device, ifixit_guide, ifixit_photos, ifixit_answers): for repair and "how do I open / replace / fix" questions, and to check a diagnosis, read the real guide for this product (or its closest sibling) and look at its photos, then walk the user through its steps in order, naming the tools and screws, and say which guide it is. Use ifixit_answers for what owners found causes a symptom.
 - edit_parts(updates) / add_part(part) / remove_part(id): change the model itself when the user asks to (add, remove, resize, move or correct a part). Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); keep new parts inside the object and give them a material and a short function. Highlight what you changed, then say what you did.
 
 For symptoms: if more than one failure plausibly fits, ask a single discriminating question first (e.g. direction, timing, what they already tried), then diagnose. Never ask more than two questions in a conversation. For "how does it work" prompts, play or create a scenario. Always finish with a short spoken-style answer (at most 70 words) unless you just asked a question. Be honest about what is inferred."""
@@ -140,7 +142,7 @@ async def respond(
 
     async def edit_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
-        for u in a.get("updates", []):
+        for u in items(a.get("updates")):
             p = by_id.get(u.get("id", ""))
             if p is None:
                 unknown.append(u.get("id"))
@@ -193,7 +195,8 @@ async def respond(
              params({"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, ["question"]), ask_user),
     ]
     messages.append({"role": "user", "content": prompt})
-    text = await run_loop(agent="guide", model=model, messages=messages, tools=tools, emit=emit, max_turns=6,
-                          reasoning_effort="low")
+    async with httpx.AsyncClient(timeout=ifixit.TIMEOUT, headers=ifixit.HEADERS, follow_redirects=True) as client:
+        text = await run_loop(agent="guide", model=model, messages=messages, tools=tools + ifixit.tools(ifixit.Session(client)),
+                              emit=emit, max_turns=6, reasoning_effort="low")
     if text:
         await emit({"type": "answer", "text": text})

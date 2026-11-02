@@ -168,7 +168,8 @@ def research_question(prompt: str) -> str:
 
 
 def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[str, Any]] | None = None,
-                      prints: list[dict[str, Any]] | None = None) -> str:
+                      prints: list[dict[str, Any]] | None = None, teardown: str | None = None,
+                      inside: list[dict[str, Any]] | None = None) -> str:
     reference = (f"\n\nReference research from the web (teardowns, service notes, specs). Prefer it over memory for internal "
                  f"layout, sizes and failure modes, and mark parts it describes as basis \"documented\":\n<research>\n{brief}\n</research>"
                  if brief else "")
@@ -188,6 +189,17 @@ def anatomy_user_text(prompt: str, brief: str | None = None, views: list[dict[st
         reference += (f"\n\n3D-printable models made for this product, drawn from three sides with their real size: {listed}. "
                       f"People who own the object measured these; prefer them over guesses for its overall size and the "
                       f"shape of its outer shell.")
+    if teardown:
+        reference += (f"\n\nTeardown dossier from iFixit, where people took this object (or a sibling it names) apart step by "
+                      f"step. It is the best evidence for the inside: build the internal parts, their sizes, how they are held "
+                      f"and joined, and every access_path from it, and mark the parts it describes as basis \"documented\":"
+                      f"\n<teardown>\n{teardown}\n</teardown>")
+    if inside:
+        first = 2 + len(views or []) + len(prints or [])
+        listed = "; ".join(f"image {first + i} = \"{p['guide']}\" step {p['step']}: {p['shows']}" for i, p in enumerate(inside))
+        reference += (f"\n\nPhotos of the inside from those guides: {listed}. Size and place the internal parts so they fit "
+                      f"inside the outer parts the way these photos show; every internal part must sit wholly inside the "
+                      f"exterior shells, so size the shells to hold them.")
     return f"User prompt: {prompt.strip() or 'Show me how this works.'}{reference}\n\nReconstruct this object's anatomy."
 
 

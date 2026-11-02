@@ -9,9 +9,9 @@ import json
 from typing import Any
 
 from . import anatomy as A
-from . import assembly, depth, fit, mates, meta, modeler, pose, prints, views
+from . import assembly, depth, fit, ifixit, mates, meta, modeler, pose, prints, review, views
 from . import model as M
-from .agent import Emit, Tool, ToolResult, params, run_loop
+from .agent import Emit, Tool, ToolResult, items, params, run_loop
 from .checks import geometry_issues, layout_overlay
 from .ground import SegmentCache, object_frame, part_matches, pick_object
 
@@ -58,6 +58,22 @@ async def _research(*, image: bytes, prompt: str, emit: Emit, model: str) -> dic
                 "text": f"{_count(len(found['searches']), 'search', 'searches')}, {_count(len(found['sources']), 'source', 'sources')} cited"
                         + (f" ({', '.join(hosts[:4])})" if hosts else "")})
     return found if found["text"] else None
+
+
+async def _teardown(*, image: bytes, prompt: str, emit: Emit, model: str) -> dict[str, Any] | None:
+    """The iFixit dossier on how the object comes apart, with photos of its inside; None when iFixit has nothing."""
+    await emit({"type": "step", "agent": "builder", "tool": "ifixit", "status": "running"})
+    try:
+        found = await ifixit.research(image=image, prompt=prompt, emit=emit, model=model)
+    except Exception as e:  # a reference source going down shouldn't stop a build
+        await emit({"type": "step", "agent": "builder", "tool": "ifixit", "status": "error", "text": f"iFixit unavailable ({e})"})
+        return None
+    await emit({"type": "step", "agent": "builder", "tool": "ifixit", "status": "done",
+                "text": (f"Teardown dossier from {_count(len(found['sources']), 'iFixit page', 'iFixit pages')}"
+                         f" with {_count(len(found['photos']), 'photo', 'photos')} of the inside: "
+                         + "; ".join(dict.fromkeys(s["title"].removeprefix("iFixit: ") for s in found["sources"][:3]))) if found
+                        else "iFixit has no teardown or guides for this object"})
+    return found
 
 
 async def _side_pages(image: bytes, model: str) -> list[dict[str, str]]:
@@ -135,6 +151,8 @@ async def build(
     # Pages showing the product from the side are searched for alongside the research (a profile is what pins down
     # depth, and teardown and spec pages rarely have one).
     side_search_pages = asyncio.create_task(_side_pages(image, model))
+    # iFixit is read by a researcher of its own (teardowns step by step, with their photos) alongside the web research.
+    teardown = asyncio.create_task(_teardown(image=image, prompt=prompt, emit=emit, model=model))
     research = await _research(image=image, prompt=prompt, emit=emit, model=model)
     query, print_queries = None, []
     if research:
@@ -142,19 +160,24 @@ async def build(
         research["text"], print_queries = A.printables_queries(research["text"])
     # Other photos of the product and printable models made for it are found side by side.
     sides: list[dict[str, Any]] = []
-    picked, printed = await asyncio.gather(
+    picked, printed, torn = await asyncio.gather(
         _views(image=image, own=own or [], query=query, sources=research["sources"] if research else [], emit=emit, model=model,
                names=print_queries, side_sources=await side_search_pages, sides=sides),
-        _prints(image=image, queries=print_queries, emit=emit, model=model))
+        _prints(image=image, queries=print_queries, emit=emit, model=model),
+        teardown)
+    inside = torn["photos"] if torn else []
     await emit({"type": "step", "agent": "builder", "tool": "draft", "status": "running"})
     draft = A.sanitize(await meta.chat_json(
-        model=model, system=A.ANATOMY_SYSTEM, user_text=A.anatomy_user_text(prompt, research and research["text"], picked, printed),
-        image_jpeg=image, more_images=[v["jpeg"] for v in picked] + [r["drawing"] for r in printed],
+        model=model, system=A.ANATOMY_SYSTEM,
+        user_text=A.anatomy_user_text(prompt, research and research["text"], picked, printed, torn and torn["text"], inside),
+        image_jpeg=image, more_images=[v["jpeg"] for v in picked] + [r["drawing"] for r in printed] + [p["jpeg"] for p in inside],
         schema_name="anatomy", schema=A.ANATOMY_SCHEMA, reasoning_effort=reasoning, max_tokens=24000,
     ))
-    if research:
+    if research or torn:
         # Kept with the anatomy so the guide can answer from the same references and the UI can cite them.
-        draft["research"] = {"notes": research["text"][:6000], "sources": research["sources"][:12], "searches": research["searches"]}
+        notes = "\n\n".join(t for t in [research and research["text"], torn and f"iFixit teardown dossier:\n{torn['text']}"] if t)
+        sources = (torn["sources"] if torn else [])[:8] + (research["sources"] if research else [])
+        draft["research"] = {"notes": notes[:12000], "sources": sources[:16], "searches": research["searches"] if research else []}
     if picked:
         draft["references"] = [views.cite(v) for v in picked]
     if printed:
@@ -223,7 +246,7 @@ async def build(
 
     async def place_in_photo(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
-        for u in a.get("updates", []):
+        for u in items(a.get("updates")):
             p = parts.get(u.get("id", ""))
             try:
                 x, y = float(u["x_mm"]), float(u["y_mm"])
@@ -242,7 +265,7 @@ async def build(
 
     async def update_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
-        for u in a.get("updates", []):
+        for u in items(a.get("updates")):
             p = parts.get(u.get("id", ""))
             if p is None:
                 unknown.append(u.get("id"))
@@ -251,7 +274,7 @@ async def build(
             done.append(p["id"])
         if done:
             await changed()
-        reasons = "; ".join(f"{u['id']}: {u.get('reason', '')}" for u in a.get("updates", []) if u.get("id") in done)
+        reasons = "; ".join(f"{u['id']}: {u.get('reason', '')}" for u in items(a.get("updates")) if u.get("id") in done)
         return ToolResult(json.dumps({"updated": done, "unknown_ids": unknown}),
                           f"Revised {len(done)} part{'s' * (len(done) != 1)} — {reasons}" if done else "No parts updated", ok=bool(done))
 
@@ -336,7 +359,8 @@ async def build(
         work.setdefault("references", []).append(views.cite(found_side[0]))
     # Then real 3D form for the parts that matter, checked against the photo; primitives stay if this fails.
     try:
-        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed, views=picked)
+        await modeler.model(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model, outline=outline, printed=printed,
+                            views=picked, inside=inside)
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "model_parts", "status": "error",
                     "text": f"Modeling stopped ({e}); parts stay as simple shapes"})
@@ -350,6 +374,15 @@ async def build(
                     "text": f"Fitted the parts together: {_count(pockets, 'pocket', 'pockets')} carved for parts that sit in others, "
                             f"{_count(moves, 'part', 'parts')} moved apart so nothing overlaps"})
         await emit({"type": "anatomy", "anatomy": A.sanitize(copy.deepcopy(work))})
+    # Then Muse looks at the finished model as the user will, from every side, and fixes what shows it is wrong.
+    try:
+        left = await review.review(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model,
+                                   side=found_side[0], inside=inside)
+        if left:
+            await emit({"type": "step", "agent": "builder", "tool": "review", "status": "done",
+                        "text": f"Reviewed; {_count(len(left), 'flaw', 'flaws')} left: " + "; ".join(f.split(" shows")[0].split(" was")[0] for f in left)})
+    except meta.MetaAPIError as e:
+        await emit({"type": "step", "agent": "builder", "tool": "review", "status": "error", "text": f"Review stopped ({e})"})
     return await _with_profile(A.sanitize(work), profile, emit)
 
 

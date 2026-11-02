@@ -13,7 +13,7 @@ from . import fit, mates, meta
 from .checks import geometry_issues
 from . import depth
 from . import model as M
-from .agent import Emit, Tool, ToolResult, params, run_loop
+from .agent import Emit, Tool, ToolResult, items, params, run_loop
 
 MODELER_SYSTEM = f"""You are Magneye's modeler. The anatomy of the object in the photo is verified, but its parts are still plain primitives. Give the parts that define how the object looks and works a real 3D form, as geometry recipes.
 
@@ -108,7 +108,7 @@ def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dic
 
 async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
                 outline: fit.Outline | None = None, printed: list[dict[str, Any]] | None = None,
-                views: list[dict[str, Any]] | None = None) -> int:
+                views: list[dict[str, Any]] | None = None, inside: list[dict[str, Any]] | None = None) -> int:
     """Run the modeler on `anatomy` in place (recipes go on parts as "model"). Returns how many parts it modeled."""
     parts = {p["id"]: p for p in anatomy["parts"]}
     solids: dict[str, Any] = {}
@@ -130,7 +130,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def model_parts(a: dict[str, Any]) -> ToolResult:
         report, built = [], []
-        for item in a.get("models", []):
+        for item in items(a.get("models")):
             pid, recipe = item.get("id", ""), item.get("recipe")
             part = parts.get(pid)
             if part is None:
@@ -179,7 +179,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
-        for u in a.get("updates", []):
+        for u in items(a.get("updates")):
             part = parts.get(u.get("id", ""))
             fields = {k: u[k] for k in ("center_mm", "size_mm", "rotation_deg")
                       if isinstance(u.get(k), list) and len(u[k]) == 3 and all(isinstance(x, (int, float)) for x in u[k])}
@@ -195,7 +195,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
 
     async def mate_parts(a: dict[str, Any]) -> ToolResult:
         done, failed = [], []
-        for m in a.get("mates", []):
+        for m in items(a.get("mates")):
             try:
                 done.append(mates.apply(parts, m))
                 anatomy.setdefault("mates", []).append({k: m[k] for k in ("part", "to", "type", "face", "axis", "direction", "at") if k in m})
@@ -245,12 +245,17 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
     shapes = [part for r in printed or [] for part in (
         meta.image_part(r["drawing"]),
         {"type": "text", "text": f"Printable model \"{r['title']}\" ({r['relation'].replace('_', ' ')}), {' x '.join(f'{v:g}' for v in r['model_size_mm'])} mm: {r['note']}"})]
+    # Teardown photos show what the internal parts really look like and how they sit in the shell.
+    shapes += [part for p in inside or [] for part in (
+        meta.image_part(p["jpeg"]), {"type": "text", "text": f"Inside view, iFixit “{p['guide']}” step {p['step']}: {p['shows']}"})]
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": MODELER_SYSTEM},
         {"role": "user", "content": [meta.image_part(photo), *shapes, {"type": "text", "text":
             f"Object: {anatomy['object']['name']} ({anatomy['object'].get('category', '')}), {anatomy['object']['dimensions_mm']} mm.\n"
             f"Parts:\n{json.dumps(brief)}\n\nModel them."
-            + ("\n\nThe printable models above were made by people who own this product; match the outer shell to them." if shapes else "")}]},
+            + ("\n\nThe printable models above were made by people who own this product; match the outer shell to them." if printed else "")
+            + ("\n\nThe inside views above are from a teardown of this product: model the internal parts the way they look there, "
+               "and the shells big enough to hold them." if inside else "")}]},
     ]
     score()
     await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
