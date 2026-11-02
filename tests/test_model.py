@@ -100,3 +100,22 @@ def test_printable_models_parse_and_draw():
     assert prints.drawing(prints.parse_stl(binary)).size[0] > 600
     brief, queries = A.printables_queries('notes\nPrintables search: rift s controller; "quest touch"; touch controller; extra')
     assert brief == "notes" and queries == ["rift s controller", "quest touch", "touch controller"]
+
+
+def test_a_loft_flares_through_its_sections_into_one_closed_body():
+    from magneye import model as M
+    solid = M.build({"op": "loft", "sections": [{"at": [0, -50, 0], "w": 26, "d": 24}, {"at": [0, 0, 2], "w": 34, "d": 30, "square": 0.3},
+                                                {"at": [0, 40, 10], "w": 52, "d": 26, "square": 0.8}]})
+    b = solid.bounding_box()
+    assert solid.genus() == 0 and solid.volume() > 0
+    # Wider at the head than at the foot, and the round caps reach past the end sections.
+    assert 50 <= b[3] - b[0] <= 54 and b[1] < -50 and b[4] > 40
+
+
+def test_a_blend_melts_shapes_together_with_a_fillet():
+    from magneye import model as M
+    parts = [{"op": "sphere", "d": 30}, {"op": "tube", "points": [[0, 0, 0], [0, -40, 0]], "d": 14}]
+    hard = M.build({"op": "union", "of": parts})
+    soft = M.build({"op": "blend", "k": 8, "of": parts})
+    # The fillet adds material where the tube meets the ball; the shapes are otherwise the same size.
+    assert soft.volume() > hard.volume() and abs((soft.bounding_box()[4] - soft.bounding_box()[1]) - 62) < 2

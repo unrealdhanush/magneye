@@ -41,16 +41,18 @@ The renders show the finished model: outer parts in their colours, and every int
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
-A part listed as trimmed was cut down to fit inside the shell: the same causes apply. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (rounded, tapering, joining its neighbours without steps); without one it is a plain rounded box.
+A part listed as trimmed was cut down to fit inside the shell: the same causes apply. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
 
 Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); a part's size_mm is in its own frame before its rotation_deg. After your edits the parts are fitted together again (what you placed stays put, the rest gives way) and you get the new renders.
 
 Tools:
 - place_parts(updates): change center_mm, size_mm and rotation_deg of parts.
-- model_parts(models): give parts a new geometry recipe (the same recipe language the modeler used: {M.OPS_DOC.splitlines()[0]}).
+- model_parts(models): give parts a new geometry recipe.
 - add_part(part, recipe): add a missing part, with an optional recipe.
 - remove_part(id): remove a part that doesn't exist in the real object.
 - finish(summary): when the renders look like the real object, or nothing more can be fixed.
+
+{M.OPS_DOC}
 
 Work in at most three turns: write down every flaw you see and its cause, fix them all in one turn, check the new renders, and finish."""
 

@@ -21,7 +21,7 @@ import numpy as np
 from manifold3d import CrossSection, Manifold
 from PIL import Image, ImageDraw
 
-from . import pose
+from . import pose, sculpt
 
 MAX_NODES = 48
 MAX_DEPTH = 8
@@ -33,7 +33,11 @@ OPS_DOC = """Recipe nodes (JSON). Every node may also have "at": [x, y, z] (move
 - {"op": "cylinder", "d": d, "h": h, "axis": "x"|"y"|"z", "d2": top_d}: a cylinder along the axis (default z); d2 makes it a cone or frustum.
 - {"op": "sphere", "d": d}
 - {"op": "torus", "d": d, "w": w, "axis": ...}: a smooth ring (a tyre, a halo, an O-ring): outer diameter d, round cross-section w thick, facing along the axis.
-- {"op": "tube", "points": [[x, y, z], ...], "d": d}: a smooth round tube through the points (a cable, a handle, a grip that tapers: give "d" as one diameter per point). The way to sculpt organic one-piece bodies.
+- {"op": "ellipsoid", "size": [x, y, z]}: a stretched sphere (a palm swell, a mouse back, a pebble).
+- {"op": "tube", "points": [[x, y, z], ...], "d": d}: a smooth round tube through the points (a cable, a handle; give "d" as one diameter per point to taper it).
+- {"op": "loft", "sections": [{"at": [x, y, z], "w": w, "d": d, "square": s}, ...], "caps": "round"|"flat"}: THE way to sculpt moulded bodies (grips, handles, housings, shells, bottles, mice, controller bodies): a smooth body swept through cross-sections, each w wide (across, near x) and d deep, square 0 for an oval up to 1 for a rounded rectangle. The path curves smoothly through the section centres and the shape changes smoothly between them, so a grip can flare into a head in one piece. Use 3 to 6 sections.
+- {"op": "blend", "of": [shapes], "k": k}: shapes melted together with smooth fillets about k mm wide, like clay (a handle growing out of a body, a boss rising from a shell). Shapes: sphere, ellipsoid, box, cylinder, torus, tube, each with its own "at"/"rotate".
+- Any node may have "smooth": true (or 0..1) to round its creases and facets into a smooth surface, e.g. a union or hull of blocks that should read as one moulded part.
 - {"op": "gear", "d": d, "h": h, "teeth": n, "axis": ...}: a spur gear.
 - {"op": "extrude", "polygon": [[a, b], ...], "h": h, "axis": ...}: a 2D outline (in the plane across the axis) pushed out h, centred.
 - {"op": "revolve", "profile": [[r, t], ...], "axis": ...}: a profile of radius r against position t along the axis, spun round it (knobs, lenses, bottles, cups).
@@ -112,6 +116,8 @@ class _Builder:
         if self.nodes > MAX_NODES or depth > MAX_DEPTH:
             raise RecipeError(f"recipes are limited to {MAX_NODES} nodes and {MAX_DEPTH} levels")
         m = self._shape(node, depth)
+        if node.get("smooth"):
+            m = _smoothed(m, node["smooth"])
         if "rotate" in node:
             m = m.rotate(_vec(node, "rotate"))
         if "at" in node:
@@ -144,6 +150,36 @@ class _Builder:
             return _to_axis(Manifold.cylinder(h, d / 2, d2 / 2, SEGMENTS, True), axis)
         if op == "sphere":
             return Manifold.sphere(_num(node, "d") / 2, SEGMENTS)
+        if op == "ellipsoid":
+            size = _vec(node, "size")
+            if min(size) <= 0:
+                raise RecipeError("ellipsoid: size must be positive")
+            return Manifold.sphere(0.5, SEGMENTS).scale(size)
+        if op == "loft":
+            sections = node.get("sections")
+            if not (isinstance(sections, list) and len(sections) >= 2 and all(isinstance(x, dict) for x in sections)):
+                raise RecipeError("loft: sections needs at least two {at, w, d, square}")
+            secs = [{"at": _vec(x, "at"), "w": _num({**x, "op": "loft"}, "w"), "d": _num({**x, "op": "loft"}, "d"),
+                     "square": min(max(float(x.get("square") or 0), 0.0), 1.0)} for x in sections]
+            caps = str(node.get("caps", "round"))
+            if caps not in ("round", "flat"):
+                raise RecipeError("loft: caps is round or flat")
+            try:
+                return sculpt.loft(secs, caps)
+            except sculpt.SculptError as e:
+                raise RecipeError(str(e)) from None
+        if op == "blend":
+            of = node.get("of")
+            if not isinstance(of, list) or len(of) < 2:
+                raise RecipeError("blend needs \"of\": at least two shapes")
+            k = _num(node, "k", 4.0, lo=0.1)
+            # Each shape is built once too, for its bounds and so a bad one reports the usual errors.
+            boxes = [self.build(c, depth + 1).bounding_box() for c in of]
+            bounds = [min(b[i] for b in boxes) for i in range(3)] + [max(b[3 + i] for b in boxes) for i in range(3)]
+            try:
+                return sculpt.blend(of, k, bounds)
+            except (sculpt.SculptError, KeyError, TypeError, ValueError) as e:
+                raise RecipeError(str(e) if isinstance(e, sculpt.SculptError) else f"blend: a shape is missing {e}") from None
         if op == "torus":
             d, w = _num(node, "d"), _num(node, "w")
             if w >= d:
@@ -227,6 +263,15 @@ class _Builder:
                 out = out + item.rotate([v * 360 * i / count for v in spin])
             return out
         raise RecipeError(f"unknown op {op!r}")
+
+
+def _smoothed(m: Manifold, how: Any) -> Manifold:
+    """The solid with its facets and creases rounded into a smooth surface. `how` is true (round every edge) or 0..1:
+    how much rounding, from keeping creases sharper than 30 degrees to keeping none."""
+    amount = 1.0 if how is True else min(max(float(how), 0.0), 1.0)
+    b = m.bounding_box()
+    span = max(b[3 + i] - b[i] for i in range(3))
+    return m.smooth_out(30 + 150 * amount, 0).refine_to_length(max(span / 48, 0.5))
 
 
 def build(recipe: Any) -> Manifold:

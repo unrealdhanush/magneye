@@ -20,7 +20,7 @@ MODELER_SYSTEM = f"""You are Magneye's modeler. The anatomy of the object in the
 
 What to model, in this order: every exterior part (its rounded edges and corners, and the hollows, openings and cut-outs it really has: wells, ports, grilles, holes, buttons, seams), accessories, then the main internal mechanisms (gears with teeth, springs, motors, lenses, speaker drivers, cells). Skip parts under about 3 mm and anything that really is a plain box or cylinder already.
 
-Sculpt, don't stack: where the real object is one moulded body (a mouse shell, a drill's grip running into its motor housing, a bottle, a controller's grip and ring), model that body as one smooth continuous shape: tubes and tori along its centre lines, hulls of spheres for bulges, then shell it and cut its openings. Rings and halos are tori, not polygons. Seams belong where the real part splits, not between your primitives.
+Sculpt, don't stack: real products are moulded, so almost nothing in them is a box. Where the real object is one moulded body (a mouse shell, a drill's grip running into its motor housing, a bottle, a controller's grip flaring into its head), model that body as one smooth continuous shape: a loft through its cross-sections (how wide, deep and square it is at each height, along a path that bends where it bends), blend for parts that grow out of each other with fillets, ellipsoids for swells, then shell it and cut its openings. Covers and panels follow the body's curve. Rings and halos are tori. Seams belong where the real part splits, not between your primitives. Use plain boxes only for parts that really are boxy (boards, cells, chips).
 
 {M.OPS_DOC}
 
