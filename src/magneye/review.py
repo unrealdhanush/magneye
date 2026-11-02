@@ -41,7 +41,7 @@ The renders show the finished model: outer parts in their colours, and every int
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
-A part listed as trimmed was cut down to fit inside the shell: the same causes apply. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
+A part listed as trimmed was cut down to fit inside the shell: the same causes apply. A part listed as floating doesn't touch the body: in the real object every outer part is joined to it (a ring is moulded to the head, a button sits in its plate, the head runs into the grip), so close the gap the way the real object does: move it, extend it, or reshape the part between. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
 
 Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); a part's size_mm is in its own frame before its rotation_deg. After your edits the parts are fitted together again (what you placed stays put, the rest gives way) and you get the new renders.
 
@@ -132,6 +132,60 @@ def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[floa
     return im, showing, total, where
 
 
+TOUCH_MM = 1.5
+
+
+def _surface_points(solid: Manifold, rng: np.random.Generator, most: int = 3000) -> np.ndarray:
+    v, _ = M.arrays(solid.refine_to_length(2.0))
+    return v if len(v) <= most else v[rng.choice(len(v), most, replace=False)]
+
+
+def _floating(anatomy: dict[str, Any], solids: dict[str, Manifold]) -> list[str]:
+    """Outer parts that don't touch the main body (the largest group of outer parts that touch each other), with how
+    far they are from it: a ring hanging in the air, a button hovering over its plate, a head apart from its grip."""
+    outer = [p for p in anatomy["parts"] if p["kind"] == "exterior" and p["id"] in solids]
+    if len(outer) < 2:
+        return []
+    rng = np.random.default_rng(0)
+    pts = {p["id"]: _surface_points(solids[p["id"]], rng) for p in outer}
+    boxes = {p["id"]: np.array(solids[p["id"]].bounding_box()) for p in outer}
+
+    def gap(a: str, b: str, reach: float) -> float:
+        ba, bb = boxes[a], boxes[b]
+        apart = np.maximum(0, np.maximum(ba[:3] - bb[3:], bb[:3] - ba[3:]))
+        if np.linalg.norm(apart) > reach:
+            return float("inf")
+        best = float("inf")
+        for chunk in np.array_split(pts[a], max(1, len(pts[a]) // 500)):
+            d = np.sqrt(((chunk[:, None, :] - pts[b][None, :, :]) ** 2).sum(-1)).min()
+            best = min(best, float(d))
+        return best
+    ids = [p["id"] for p in outer]
+    group = {i: i for i in ids}
+
+    def root(i: str) -> str:
+        while group[i] != i:
+            i = group[i]
+        return i
+    for n, a in enumerate(ids):
+        for b in ids[n + 1:]:
+            if root(a) != root(b) and gap(a, b, TOUCH_MM) <= TOUCH_MM:
+                group[root(a)] = root(b)
+    members: dict[str, list[str]] = {}
+    for i in ids:
+        members.setdefault(root(i), []).append(i)
+    body = max(members.values(), key=lambda g: sum(solids[i].volume() for i in g))
+    out = []
+    for g in members.values():
+        if g is body:
+            continue
+        near = min(((gap(a, b, 60), a, b) for a in g for b in body), key=lambda x: x[0])
+        what = " and ".join(g[:3]) + (" (together)" if len(g) > 1 else "")
+        out.append(f"{what} floats {near[0]:.0f} mm from the body (nearest: {near[1]} to {near[2]})" if near[0] < 60
+                   else f"{what} is far from the body")
+    return out
+
+
 def _clashes(anatomy: dict[str, Any]) -> list[str]:
     """Outer parts cut for other outer parts that are not much smaller than them: likely one passing through the other
     rather than a control set into a surface."""
@@ -185,7 +239,7 @@ def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], side: dict[st
         out.paste(tile, (x + (TILE - tile.width) // 2, y + 24 + (TILE - tile.height) // 2))
         draw.text((x + 4, y + 6), label, fill=(230, 236, 245))
     flaws = [f"{pid} shows through from " + ", ".join(f"{n} ({100 * s:.1f}% of the view)" for n, s in where_)
-             for pid, where_ in seen.items()] + trimmed
+             for pid, where_ in seen.items()] + trimmed + _floating(anatomy, solids)
     return M.jpeg(out), flaws
 
 

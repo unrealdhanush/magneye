@@ -430,3 +430,15 @@ def test_tools_that_change_the_model_take_turns():
         await asyncio.gather(a.run({}), b.run({}))
     asyncio.run(both())
     assert log == ["add_part start", "add_part end", "place_parts start", "place_parts end"]
+
+
+def test_the_review_reports_outer_parts_floating_free_of_the_body():
+    from magneye import review as R
+    part = lambda pid, c, s: {"id": pid, "name": pid, "kind": "exterior", "material": "plastic", "shape": "box", "center_mm": c,
+                              "size_mm": s, "rotation_deg": [0, 0, 0], "layer": 1}
+    anatomy = {"object": {"name": "x", "dimensions_mm": [40, 120, 40], "camera": {}},
+               "parts": [part("grip_shell", [0, 0, 0], [30, 80, 30]), part("head", [0, 50, 0], [40, 20, 30]), part("ring", [0, 80, 0], [60, 10, 60])]}
+    solids, _ = R.assembled(anatomy)
+    found = R._floating(anatomy, solids)
+    # The head touches the grip; the ring hangs 10 mm above the head.
+    assert len(found) == 1 and found[0].startswith("ring floats 10 mm")
