@@ -244,10 +244,15 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
       // into the object's frame (a no-op for a straight-on photo).
       const toPhoto = photoRotation(anatomy)
       const seen = home.clone().applyMatrix4(toPhoto)
-      const half = (spanInPhoto(anatomy, part.size_mm)[2] * s) / 2
+      // Only as deep as the part is thick: its full span along the line of sight would draw a button as a long rod.
+      const half = (Math.min(spanInPhoto(anatomy, part.size_mm)[2], Math.min(...part.size_mm)) * s) / 2
       const g = extrudeMask(maskShapes(match, anatomy, ground), anatomy, ground, seen.z - half, seen.z + half, [FACE.back, FACE.photo])
       if (g) {
-        g.translate(-seen.x, -seen.y, -seen.z)
+        // Centred on the part itself, not where the photo shows it: once the model is refined the two differ a
+        // little, and a traced button left at its photo spot would stand off the faceplate it belongs in.
+        g.computeBoundingBox()
+        const traced = g.boundingBox!.getCenter(new THREE.Vector3())
+        g.translate(-traced.x, -traced.y, -seen.z)
         g.applyMatrix4(toPhoto.clone().transpose())
         const tone = texture.image ? maskColor(texture.image as HTMLImageElement, match) : new THREE.Color('#3a3a3c')
         const mats = [
@@ -260,8 +265,15 @@ function usePieces(part: Part, s: number, anatomy: Anatomy, ground: Ground | nul
       }
     }
     const comps = (part.components ?? []).filter(c => c.size_mm?.length === 3 && c.offset_mm?.length === 3)
+    // Components fill the part's current size (scaled about its centre, as the server places them), so a part that
+    // is resized or slimmed to fit is drawn that size.
+    const fill = [0, 1, 2].map(i => {
+      const lo = Math.min(...comps.map(c => c.offset_mm[i] - c.size_mm[i] / 2)), hi = Math.max(...comps.map(c => c.offset_mm[i] + c.size_mm[i] / 2))
+      return hi > lo ? part.size_mm[i] / (hi - lo) : 1
+    })
     const specs = comps.length
-      ? comps.map(c => ({ shape: c.shape, size_mm: c.size_mm, material: c.material ?? part.material, offset: c.offset_mm, rot: c.rotation_deg ?? [0, 0, 0] }))
+      ? comps.map(c => ({ shape: c.shape, size_mm: c.size_mm.map((v, i) => v * fill[i]), material: c.material ?? part.material,
+          offset: c.offset_mm.map((v, i) => v * fill[i]), rot: c.rotation_deg ?? [0, 0, 0] }))
       : [{ shape: part.shape, size_mm: part.size_mm, material: part.material, offset: [0, 0, 0], rot: [0, 0, 0] }]
     const materials: THREE.MeshStandardMaterial[] = []
     const pieces: Piece[] = specs.map(c => {

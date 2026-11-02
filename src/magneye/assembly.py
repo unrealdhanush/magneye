@@ -47,13 +47,22 @@ CONTAIN_STEPS = 30
 
 
 def _solid(part: dict[str, Any]) -> Manifold:
-    """The part's own solid, as built (its model, or a box of its size)."""
+    """The part's own solid as the viewer draws it: its model, else its components, else its plain shape."""
     if part.get("model"):
         try:
             return M.build(part["model"])
         except M.RecipeError:
             pass
-    return Manifold.cube(part["size_mm"], True)
+    comps = [c for c in part.get("components") or [] if len(c.get("size_mm") or []) == 3 and len(c.get("offset_mm") or []) == 3]
+    if comps:
+        out = None
+        for c in comps:
+            turn = np.array(pose.part_rotation(c.get("rotation_deg") or [0, 0, 0]))
+            piece = M.primitive(c.get("shape", "box"), c["size_mm"]).transform(np.hstack([turn, np.array(c["offset_mm"], float).reshape(3, 1)]))
+            out = piece if out is None else out + piece
+        if out is not None and not out.is_empty():
+            return out
+    return M.primitive(part.get("shape", "box"), part["size_mm"])
 
 
 def _placed(part: dict[str, Any], solid: Manifold) -> Manifold:
@@ -365,7 +374,7 @@ def build_part(part: dict[str, Any], parts: dict[str, dict[str, Any]],
     the bounds the viewer scales by, so a pocket that opens through a face doesn't resize the part. With `inside`
     (the object's interior), an inner part is trimmed to it and an outer part's pockets for inner parts stop under
     its skin, so nothing inside shows through the outside."""
-    solid = M.build(part["model"]) if part.get("model") else Manifold.cube(part["size_mm"], True)
+    solid = M.build(part["model"]) if part.get("model") else _solid(part)
     cut = solid
     place = M.placement(part, solid)
     a, t = place[:, :3], place[:, 3]

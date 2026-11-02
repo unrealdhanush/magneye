@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
 from typing import Any
 
@@ -274,8 +275,72 @@ def _smoothed(m: Manifold, how: Any) -> Manifold:
     return m.smooth_out(30 + 150 * amount, 0).refine_to_length(max(span / 48, 0.5))
 
 
+FLAT = ("disc", "ring", "gear", "spiral")
+
+
+def _round_axis(size: list[float], flat: bool) -> int:
+    """Which axis a round shape runs along, chosen as the viewer chooses it: the thinnest for flat shapes, else the
+    one that differs most from the other two."""
+    if flat:
+        return int(np.argmin(size))
+    score = [abs(d - (sum(size) - d) / 2) - abs(size[(i + 1) % 3] - size[(i + 2) % 3]) for i, d in enumerate(size)]
+    return int(np.argmax(score))
+
+
+def primitive(shape: str, size: list[float]) -> Manifold:
+    """A part's plain shape as the viewer draws it, centred, filling `size` (mm)."""
+    size = [max(float(v), 0.5) for v in size]
+    if shape == "rounded_box":
+        r = 0.15 * min(size)
+        corners = [[sx * (size[0] / 2 - r), sy * (size[1] / 2 - r), sz * (size[2] / 2 - r)] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+        return Manifold.batch_hull([Manifold.sphere(r, 16).translate(c) for c in corners])
+    if shape == "sphere":
+        return Manifold.sphere(0.5, 32).scale(size)
+    if shape not in ("cylinder", "disc", "gear", "spiral", "cone", "capsule", "ring", "coil"):
+        return Manifold.cube(size, True)
+    axis = _round_axis(size, shape in FLAT)
+    length = size[axis]
+    radial = [size[i] for i in range(3) if i != axis]
+    if shape == "ring":
+        d = sum(radial) / 2
+        tube = max(min(length / 2, d * 0.12), 0.2)
+        solid = CrossSection([[[d / 2 - tube + tube * math.cos(a), tube * math.sin(a)] for a in
+                               (2 * math.pi * i / 16 for i in range(16))]]).revolve(48)
+        solid = solid.scale([radial[0] / d, radial[1] / d, 1])
+    elif shape == "capsule":
+        r = min(radial) / 2
+        tip = max(length / 2 - r, 0.01)
+        solid = Manifold.batch_hull([Manifold.sphere(r, 24).translate([0, 0, z]) for z in (-tip, tip)])
+        solid = solid.scale([radial[0] / (2 * r), radial[1] / (2 * r), 1])
+    else:
+        solid = Manifold.cylinder(length, 0.5, 0.0 if shape == "cone" else 0.5, SEGMENTS, True).scale([radial[0], radial[1], 1])
+    # Built along z; turned so z lies along the round axis and the two radial sizes along the other two in order.
+    return _to_axis(solid.rotate([0, 0, 90]) if axis == 0 else solid, "xyz"[axis]) if axis != 2 else solid
+
+
+# Built solids by recipe: fitting, carving and rendering ask for the same parts again and again, and a blend takes a
+# second to build. Manifold solids are immutable, so sharing them is safe.
+_BUILT: dict[str, Manifold] = {}
+MAX_BUILT = 512
+
+
 def build(recipe: Any) -> Manifold:
     """The solid a recipe describes; raises RecipeError with a reason the model can act on."""
+    try:
+        key = json.dumps(recipe, sort_keys=True)
+    except (TypeError, ValueError):
+        key = None
+    if key is not None and key in _BUILT:
+        return _BUILT[key]
+    solid = _build(recipe)
+    if key is not None:
+        if len(_BUILT) >= MAX_BUILT:
+            _BUILT.pop(next(iter(_BUILT)))
+        _BUILT[key] = solid
+    return solid
+
+
+def _build(recipe: Any) -> Manifold:
     try:
         solid = _Builder().build(recipe)
     except RecipeError:

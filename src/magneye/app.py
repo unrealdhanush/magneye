@@ -330,7 +330,7 @@ class Ask(BaseModel):
     prompt: str
 
 
-MODELS_FORMAT = "5"  # 2: blueprint outlines; 3: outlines placed by size and rotation; 4: pockets carved; 5: kept under the skin
+MODELS_FORMAT = "6"  # 2: blueprint outlines; 3: outlines placed by size and rotation; 4: pockets carved; 5: kept under the skin; 6: drawn shapes
 
 
 @app.get("/api/sessions/{sid}/models")

@@ -67,9 +67,9 @@ def assembled(anatomy: dict[str, Any]) -> tuple[dict[str, Manifold], list[str]]:
         try:
             # The viewer draws a part with no recipe and no pockets as its plain primitive, untrimmed.
             cut, frame = (assembly.build_part(p, by_id, inside) if p.get("model") or p.get("cuts")
-                          else (Manifold.cube(p["size_mm"], True),) * 2)
-        except Exception:  # a recipe that no longer builds is shown as its box
-            cut = frame = Manifold.cube(p["size_mm"], True)
+                          else (assembly._solid(p),) * 2)
+        except Exception:  # a recipe that no longer builds is shown as its plain shape
+            cut = frame = M.primitive(p.get("shape", "box"), p["size_mm"])
         out[p["id"]] = cut.transform(M.placement(p, frame))
         if p["kind"] == "internal" and inside is not None:
             whole = assembly._placed(p, frame).volume()
@@ -86,8 +86,11 @@ def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[floa
     rot = np.array(pose.rotation({"object": {"camera": camera}}), dtype=np.float32)
     tris, cols, owners = [], [], []
     order = [p for p in anatomy["parts"] if p["id"] in solids]
+    # Small triangles, so drawing them back to front gets the depth right: a board made of two big triangles
+    # would otherwise sort behind the shell it pokes out of.
+    span = max((max(b[3 + i] - b[i] for i in range(3)) for b in (solids[p["id"]].bounding_box() for p in order)), default=1.0)
     for i, p in enumerate(order):
-        v, t = M.arrays(solids[p["id"]])
+        v, t = M.arrays(solids[p["id"]].refine_to_length(span / 25))
         if not len(t):
             continue
         tris.append((v @ rot.T)[t])
