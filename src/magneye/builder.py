@@ -383,6 +383,9 @@ async def build(
                         "text": f"Reviewed; {_count(len(left), 'flaw', 'flaws')} left: " + "; ".join(f.split(" shows")[0].split(" was")[0] for f in left)})
     except meta.MetaAPIError as e:
         await emit({"type": "step", "agent": "builder", "tool": "review", "status": "error", "text": f"Review stopped ({e})"})
+    # The review keeps what Muse placed where it put it; a last fit with nothing pinned brings in anything it left
+    # sticking out.
+    await asyncio.to_thread(assembly.resolve, work)
     return await _with_profile(A.sanitize(work), profile, emit)
 
 

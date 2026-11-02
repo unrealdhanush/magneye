@@ -302,6 +302,6 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
             f"Object: {anatomy['object']['name']}, {anatomy['object']['dimensions_mm']} mm.\nParts: {json.dumps(brief)}\n"
             + (f"\nResearch notes:\n{research[:6000]}\n" if research else "") + "\nThe finished model:"}, *attach]},
     ]
-    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=4,
+    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
                    reasoning_effort="medium", until="finish", max_tokens=24000)
     return state.get("flaws", [])

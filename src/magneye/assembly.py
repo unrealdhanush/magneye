@@ -149,14 +149,39 @@ def _container(mover: dict[str, Any], parts: list[dict[str, Any]], placed: dict[
     return max(around, key=lambda s: s.volume()) if around else None
 
 
+def _band(p: dict[str, Any]) -> bool:
+    """A ring, halo or loop: its hull would fill the hole in the middle, which is open air."""
+    return p["shape"] in ("ring", "torus") or _kind_word(p) in ("ring", "halo", "loop", "hoop")
+
+
+# Turns a part's own axis 0, 1 or 2 onto z (proper rotations, so nothing is mirrored).
+_ONTO_Z = {0: np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]], float), 1: np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]], float),
+           2: np.eye(3)}
+
+
+def _filled(p: dict[str, Any], solid: Manifold) -> Manifold:
+    """The space a placed outer part closes in: its hull (a shell's hull fills its hollow). A band's hull would also
+    fill the hole in its middle, so a band is its outline seen along its thin axis, extruded back through its
+    thickness: a ring's annulus, which holds what runs inside its tube but not what sits in the hole."""
+    if not _band(p):
+        return solid.hull()
+    own = _solid(p)
+    turn = _ONTO_Z[int(np.argmin(p["size_mm"]))]
+    flat = own.transform(np.hstack([turn, np.zeros((3, 1))]))
+    b = flat.bounding_box()
+    slab = Manifold.extrude(flat.project(), b[5] - b[2]).translate([0, 0, b[2]])
+    band = slab.transform(np.hstack([turn.T, np.zeros((3, 1))])) ^ own.hull()
+    return band.transform(M.placement(p, own))
+
+
 def _envelope(parts: list[dict[str, Any]], placed: dict[str, Manifold]) -> Manifold | None:
-    """The space the outer parts close in: the hull of each (a shell's hull fills its hollow). An inner part outside
-    it shows through the outside of the model."""
+    """The space the outer parts close in: the hull of each (a shell's hull fills its hollow), but a ring only as
+    itself. An inner part outside it shows through the outside of the model."""
     hulls = []
     for p in parts:
         if p["kind"] != "exterior":
             continue
-        hulls.append(placed[p["id"]].hull())
+        hulls.append(_filled(p, placed[p["id"]]))
     if not hulls:
         return None
     out = hulls[0]
@@ -312,10 +337,10 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
     return list(dict.fromkeys(changes))
 
 
-def _under_skin(solid: Manifold) -> Manifold:
-    """The inside of an outer part: its hull shrunk by WALL_MM on every side (a convex hull, so scaling it about its
-    centre is close to a true inward offset)."""
-    h = solid.hull()
+def _under_skin(solid: Manifold, part: dict[str, Any] | None = None) -> Manifold:
+    """The inside of an outer part: what it closes in (see _filled) shrunk by WALL_MM on every side (scaling about
+    its centre, close to a true inward offset for these rounded shapes)."""
+    h = _filled(part, solid) if part else solid.hull()
     b = h.bounding_box()
     centre = [(b[i] + b[3 + i]) / 2 for i in range(3)]
     span = [max(b[3 + i] - b[i], 1e-6) for i in range(3)]
@@ -325,7 +350,7 @@ def _under_skin(solid: Manifold) -> Manifold:
 
 def interior(parts: list[dict[str, Any]]) -> Manifold | None:
     """The space under the object's skin: where inner parts may show, so none pokes out through an outer surface."""
-    inside = [_under_skin(_placed(p, _solid(p))) for p in parts if p["kind"] == "exterior"]
+    inside = [_under_skin(_placed(p, _solid(p)), p) for p in parts if p["kind"] == "exterior"]
     if not inside:
         return None
     out = inside[0]

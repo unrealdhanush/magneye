@@ -146,3 +146,15 @@ def test_inner_parts_never_show_through_the_skin():
     cut, frame = assembly.build_part(board, by_id, inside)
     trimmed = cut.transform(M.placement(board, frame))
     assert trimmed.bounding_box()[3] - trimmed.bounding_box()[0] < 36
+
+
+def test_a_ring_holds_what_runs_inside_its_tube_but_not_what_sits_in_its_hole():
+    from magneye import assembly
+    ring = {**_part("tracking_ring", (0, 0, 0), (100, 100, 24), shape="ring", rotation=(-76, 0, -10)),
+            "model": {"op": "shell", "of": {"op": "torus", "d": 100, "w": 24}, "wall": 2}}
+    leds = {**_part("ir_led_flex", (0, 0, 0), (86, 86, 4), kind="internal", shape="ring", rotation=(-76, 0, -10)),
+            "model": {"op": "torus", "d": 86, "w": 4}}
+    board = _part("main_pcb", (0, 0, 0), (30, 30, 3), kind="internal", shape="plate", rotation=(-76, 0, -10))
+    inside = assembly.interior([ring, leds, board])
+    share = lambda p: (assembly._placed(p, assembly._solid(p)) ^ inside).volume() / assembly._placed(p, assembly._solid(p)).volume()
+    assert share(leds) > 0.95 and share(board) < 0.05
