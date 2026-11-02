@@ -440,5 +440,5 @@ def test_the_review_reports_outer_parts_floating_free_of_the_body():
                "parts": [part("grip_shell", [0, 0, 0], [30, 80, 30]), part("head", [0, 50, 0], [40, 20, 30]), part("ring", [0, 80, 0], [60, 10, 60])]}
     solids, _ = R.assembled(anatomy)
     found = R._floating(anatomy, solids)
-    # The head touches the grip; the ring hangs 10 mm above the head.
-    assert len(found) == 1 and found[0].startswith("ring floats 10 mm")
+    # The head touches the grip; the ring hangs 15 mm above the head (its foot at y 75, the head's top at 60).
+    assert len(found) == 1 and found[0].startswith("ring floats 15 mm")
