@@ -252,11 +252,81 @@ def _contain(parts: list[dict[str, Any]], own: dict[str, Manifold], pinned: froz
     return changes
 
 
+def _host_recipe(host: dict[str, Any]) -> dict[str, Any]:
+    """A host part's form as a recipe: its model, or the plain shape the viewer draws for it."""
+    if host.get("model"):
+        return host["model"]
+    size, shape = host["size_mm"], host.get("shape")
+    if shape == "rounded_box":
+        return {"op": "box", "size": size, "radius": round(0.15 * min(size), 2)}
+    if shape in ("sphere", "capsule"):
+        return {"op": "ellipsoid", "size": size}
+    return {"op": "box", "size": size}
+
+
+def _affine(m: np.ndarray) -> np.ndarray:
+    return np.vstack([m, [0, 0, 0, 1]])
+
+
+def mould_recipe(part: dict[str, Any], host: dict[str, Any], thickness: float, region: dict[str, Any]) -> dict[str, Any]:
+    """The recipe for a part cut from the outside of its host: the host's outer `thickness` mm, within `region` (a
+    node in the part's own frame). A cover, door, faceplate or grip pad made this way follows every curve of the body
+    it sits on, and the body takes a matching pocket when the parts are fitted, so it sits flush."""
+    recipe = _host_recipe(host)
+    own = M.build(recipe)
+    place = M.placement(host, own)
+    turn = np.array(pose.part_rotation(part.get("rotation_deg") or [0, 0, 0]))
+    centre = np.array(part["center_mm"], float)
+    into_part = _affine(np.hstack([turn.T, (-turn.T @ centre).reshape(3, 1)]))
+    # The host shrunk by the thickness about the middle of its placed box: what stays the host's own inside.
+    b = own.transform(place).bounding_box()
+    mid = np.array([(b[i] + b[3 + i]) / 2 for i in range(3)])
+    span = np.array([max(b[3 + i] - b[i], 1e-6) for i in range(3)])
+    k = np.maximum(span - 2 * thickness, 0.2 * span) / span
+    shrink = _affine(np.hstack([np.diag(k), (mid - k * mid).reshape(3, 1)]))
+    outer = (into_part @ _affine(place))[:3].round(5).tolist()
+    inner = (into_part @ shrink @ _affine(place))[:3].round(5).tolist()
+    return {"op": "difference", "of": [
+        {"op": "intersection", "of": [{"op": "transform", "matrix": outer, "of": recipe}, region]},
+        {"op": "transform", "matrix": inner, "of": recipe}]}
+
+
+def apply_mould(part: dict[str, Any], by_id: dict[str, dict[str, Any]], spec: dict[str, Any] | None = None) -> str | None:
+    """(Re)build a moulded part from its spec ({"on", "thickness", "region"}) against where its host is now. Returns
+    an error to report, or None."""
+    spec = spec or part.get("mould")
+    if not spec:
+        return None
+    host = by_id.get(str(spec.get("on")))
+    if host is None or host is part:
+        return f"mould: no part {spec.get('on')!r} to mould onto"
+    try:
+        thickness = float(spec.get("thickness") or 2.0)
+    except (TypeError, ValueError):
+        return "mould: thickness must be a number"
+    region = spec.get("region") if isinstance(spec.get("region"), dict) else {"op": "box", "size": part["size_mm"]}
+    recipe = mould_recipe(part, host, max(thickness, 0.4), region)
+    try:
+        solid = M.build(recipe)
+    except M.RecipeError as e:
+        return f"mould: {e}; move the region onto {host['id']}'s surface"
+    b = solid.bounding_box()
+    part["mould"] = {"on": host["id"], "thickness": thickness, "region": region}
+    part["model"] = recipe
+    part["size_mm"] = [round(b[3 + i] - b[i], 2) for i in range(3)]
+    return None
+
+
 def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """Make the parts fit together without sharing space: holders get pockets for what they hold (recorded in
     "cuts"), peers are pushed apart. `pinned` parts (the ones the user just placed) never move: what collides with
     them gives way, or the two get a groove. Mutates `anatomy`; returns what changed."""
     parts = anatomy["parts"]
+    by_id = {p["id"]: p for p in parts}
+    # Moulded parts follow their host wherever it is now.
+    for p in parts:
+        if p.get("mould"):
+            apply_mould(p, by_id)
     own = {p["id"]: _solid(p) for p in parts}
     changes: list[str] = []
     for p in parts:

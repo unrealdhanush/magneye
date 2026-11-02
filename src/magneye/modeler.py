@@ -8,9 +8,10 @@ import io
 import json
 from typing import Any
 
+import numpy as np
 from PIL import Image, ImageDraw
 
-from . import fit, mates, meta
+from . import assembly, fit, mates, meta, pose
 from .checks import geometry_issues
 from . import depth
 from . import model as M
@@ -28,6 +29,7 @@ A recipe is in millimetres around the part's own centre, in the part's own frame
 
 Tools:
 - model_parts(models): build recipes for several parts in one call; each reports its built size against the part's and any error to fix.
+- study_part(ids): see up to four parts close up: the photo around each, next to your model of it drawn over the same crop. Read each piece's real outline, how its cross-section changes, where it curves and where its edges are sharp or soft.
 - view_models(): see your work: the photo, your parts drawn over the photo exactly where the camera would see them, and the internals on their own; when a real photo of another side exists, also that photo next to your parts seen from the same side.
 - place_parts(updates): fix where parts are and how big they are (center_mm, size_mm, rotation_deg), in the object's own frame. Use it when the overlay shows parts offset, too small or large, turned the wrong way, or not nested the way they really are (LEDs inside the ring they light, a cell inside its holder, a board inside its shell).
 - set_camera(azimuth_deg, elevation_deg, roll_deg): correct the photo's viewpoint if the whole model sits turned against the photo.
@@ -38,10 +40,13 @@ The overlay is the test: when you are done, the parts should cover the object in
 
 The main photo can't show depth, so a layout can match it and still be wrong from the side. When the side view is there, it is the second test: compare the silhouettes part by part (how long and thick each part is front to back, its tilt, where it meets its neighbours) and fix every mismatch with place_parts or model_parts, even when the main overlay already looks right. A body the real object has as one piece (a handle running up into a head or ring) must read as one piece from the side too: no gaps, no floating slabs.
 
-Work in at most three turns:
-1. model_parts for every part you will model, and view_models in the same turn.
-2. Fix what the overlay and the side view show: first write down each mismatch you see in either, then set_camera if everything is turned, place_parts for parts in the wrong place, size or tilt, model_parts for shapes that are wrong; then view_models again in the same turn.
-3. Final touches if needed, and finish."""
+Build it the way the real object is made: work out each piece's shape, then mould the pieces together.
+
+Work in at most four turns:
+1. study_part for the outer parts that define the look (the main body first), up to four per call and several calls in one turn.
+2. model_parts for every part you will model, each from what its close-up shows (its outline, how its section changes along it, its curves and edges), and view_models in the same turn. Build the main bodies first and mould the panels, covers, doors and faceplates that are patches of a body's surface onto it.
+3. Fix what the overlay and the side view show: first write down each mismatch you see in either, then set_camera if everything is turned, place_parts for parts in the wrong place, size or tilt, model_parts for shapes that are wrong; then view_models again in the same turn.
+4. Final touches if needed, and finish."""
 
 
 def _count(n: int, one: str) -> str:
@@ -107,6 +112,34 @@ def _panels(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dic
     return M.jpeg(sheet)
 
 
+def _study(photo: bytes, box: list[float], anatomy: dict[str, Any], solids: dict[str, Any], part: dict[str, Any]) -> bytes | None:
+    """A close-up of one part: the photo cropped around where the part sits, and the same crop with the part as
+    modeled drawn over it, so its outline, curves and edges can be read from the photo and matched."""
+    im = Image.open(io.BytesIO(photo)).convert("RGB")
+    rot = np.array(pose.rotation(anatomy))
+    span = pose.photo_extent(anatomy)
+    ow, oh = box[2] - box[0], box[3] - box[1]
+    half = np.array(part["size_mm"], float) / 2
+    turn = np.array(pose.part_rotation(part.get("rotation_deg") or [0, 0, 0]))
+    corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]) * half @ turn.T + np.array(part["center_mm"])
+    q = corners @ rot.T
+    xs, ys = box[0] + (q[:, 0] / span[0] + 0.5) * ow, box[1] + (0.5 - q[:, 1] / span[1]) * oh
+    pad = max(0.5 * max(xs.max() - xs.min(), ys.max() - ys.min()), 24)
+    region = (max(0, xs.min() - pad), max(0, ys.min() - pad), min(im.width, xs.max() + pad), min(im.height, ys.max() + pad))
+    if region[2] - region[0] < 8 or region[3] - region[1] < 8:
+        return None
+    size = 360
+    crop = im.crop(region)
+    over = M.overlay({**anatomy, "parts": [part]}, {k: v for k, v in solids.items() if k == part["id"]}, im, box).crop(region)
+    crop, over = (t.resize((round(t.width * size / max(t.size)), round(t.height * size / max(t.size)))) for t in (crop, over))
+    sheet = Image.new("RGB", (size * 2 + 16, size + 28), (12, 14, 18))
+    draw = ImageDraw.Draw(sheet)
+    for i, (label, tile) in enumerate((("Photo, close up", crop), (f"{part['id']} as modeled", over))):
+        sheet.paste(tile, (i * (size + 16), 28))
+        draw.text((i * (size + 16) + 4, 6), label, fill=(230, 236, 245))
+    return M.jpeg(sheet)
+
+
 async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
                 outline: fit.Outline | None = None, printed: list[dict[str, Any]] | None = None,
                 views: list[dict[str, Any]] | None = None, inside: list[dict[str, Any]] | None = None) -> int:
@@ -137,6 +170,15 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
             if part is None:
                 report.append({"id": pid, "error": "unknown part id"})
                 continue
+            # A moulded part is compiled against its host as it is now; any other recipe ends a mould.
+            if isinstance(recipe, dict) and recipe.get("op") == "mould":
+                err = assembly.apply_mould(part, parts, recipe)
+                if err:
+                    report.append({"id": pid, "error": err})
+                    continue
+                recipe = part["model"]
+            else:
+                part.pop("mould", None)
             try:
                 solid = M.build(recipe)
             except M.RecipeError as e:
@@ -179,6 +221,17 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         return ToolResult(f"The renders are attached in the next message.{score_text}{joins}",
                           f"Drew {_count(len(solids), 'model')} over the photo{f' · {now:.0%} overlap' if now is not None else ''}"
                           + (" and from the side" if side else ""), attach=attach)
+
+    async def study_part(a: dict[str, Any]) -> ToolResult:
+        ids = [i for i in (a.get("ids") or []) if i in parts][:4]
+        if not ids:
+            return ToolResult("Give up to four part ids.", "study_part: no parts", ok=False)
+        sheets = await asyncio.gather(*(asyncio.to_thread(_study, photo, box, anatomy, solids, parts[i]) for i in ids))
+        attach = [x for i, sh in zip(ids, sheets) if sh for x in (
+            {"type": "text", "text": f"{i}: the photo around it, and your part drawn over the same crop (as a box if not modeled yet)."},
+            meta.image_part(sh))]
+        return ToolResult("Close-ups attached in the next message." if attach else "Those parts are outside the photo.",
+                          f"Studied {', '.join(ids)} close up", ok=bool(attach), attach=attach)
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
         done, unknown = [], []
@@ -228,6 +281,8 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
     tools = [
         Tool("model_parts", "Build geometry recipes for several parts.", params({"models": recipe_list}), model_parts),
         Tool("view_models", "Draw your models over the photo, and the internals.", params({}), view_models),
+        Tool("study_part", "Look closely at up to four parts in the photo, each next to your model of it.",
+             params({"ids": {"type": "array", "items": {"type": "string"}}}), study_part),
         Tool("place_parts", "Move, resize or turn parts (object frame, mm and degrees).",
              params({"updates": {"type": "array", "items": params({"id": {"type": "string"}, "center_mm": {"type": "array", "items": {"type": "number"}},
                                                                     "size_mm": {"type": "array", "items": {"type": "number"}},
@@ -261,7 +316,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
                "and the shells big enough to hold them." if inside else "")}]},
     ]
     score()
-    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
+    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=6,
                    reasoning_effort="low", until="finish", max_tokens=24000)
     final = fit.coverage(anatomy, outline) if outline else None
     if final is not None and best and final < best["score"] - 0.03:

@@ -38,6 +38,7 @@ OPS_DOC = """Recipe nodes (JSON). Every node may also have "at": [x, y, z] (move
 - {"op": "tube", "points": [[x, y, z], ...], "d": d}: a smooth round tube through the points (a cable, a handle; give "d" as one diameter per point to taper it).
 - {"op": "loft", "sections": [{"at": [x, y, z], "w": w, "d": d, "square": s}, ...], "caps": "round"|"flat"}: THE way to sculpt moulded bodies (grips, handles, housings, shells, bottles, mice, controller bodies): a smooth body swept through cross-sections, each w wide (across, near x) and d deep, square 0 for an oval up to 1 for a rounded rectangle. The path curves smoothly through the section centres and the shape changes smoothly between them, so a grip can flare into a head in one piece. Use 3 to 6 sections.
 - {"op": "blend", "of": [shapes], "k": k}: shapes melted together with smooth fillets about k mm wide, like clay (a handle growing out of a body, a boss rising from a shell). Shapes: sphere, ellipsoid, box, cylinder, torus, tube, each with its own "at"/"rotate".
+- {"op": "mould", "on": "<part id>", "thickness": t, "region": node}: cut this part from the outside of another part: a cover, battery door, faceplate, bezel, label or grip pad that is really a patch of a body's surface. It follows every curve of that body and sits flush in it with a hairline seam, and keeps following it when the body moves. region is a shape in this part's own frame marking the patch (a box, a loft, an extruded outline); by default this part's box. Only as a whole recipe, not inside other nodes.
 - Any node may have "smooth": true (or 0..1) to round its creases and facets into a smooth surface, e.g. a union or hull of blocks that should read as one moulded part.
 - {"op": "gear", "d": d, "h": h, "teeth": n, "axis": ...}: a spur gear.
 - {"op": "extrude", "polygon": [[a, b], ...], "h": h, "axis": ...}: a 2D outline (in the plane across the axis) pushed out h, centred.
@@ -109,13 +110,16 @@ def _gear(d: float, teeth: int) -> list[list[float]]:
 class _Builder:
     def __init__(self) -> None:
         self.nodes = 0
+        # Inside a "transform" (written by the server, embedding another part's checked recipe) nodes aren't counted.
+        self.trusted = 0
 
     def build(self, node: Any, depth: int = 0) -> Manifold:
         if not isinstance(node, dict) or "op" not in node:
             raise RecipeError("every node is an object with an op")
-        self.nodes += 1
-        if self.nodes > MAX_NODES or depth > MAX_DEPTH:
-            raise RecipeError(f"recipes are limited to {MAX_NODES} nodes and {MAX_DEPTH} levels")
+        if not self.trusted:
+            self.nodes += 1
+            if self.nodes > MAX_NODES or depth > MAX_DEPTH:
+                raise RecipeError(f"recipes are limited to {MAX_NODES} nodes and {MAX_DEPTH} levels")
         m = self._shape(node, depth)
         if node.get("smooth"):
             m = _smoothed(m, node["smooth"])
@@ -156,6 +160,16 @@ class _Builder:
             if min(size) <= 0:
                 raise RecipeError("ellipsoid: size must be positive")
             return Manifold.sphere(0.5, SEGMENTS).scale(size)
+        if op == "transform":
+            # Written by the server only (see assembly.mould_recipe): another part's recipe, placed by a 3x4 matrix.
+            matrix = np.array(node.get("matrix"), float)
+            if matrix.shape != (3, 4) or not np.all(np.isfinite(matrix)):
+                raise RecipeError("transform: matrix must be 3 rows of 4 numbers")
+            self.trusted += 1
+            try:
+                return self.build(node.get("of"), 0).transform(matrix)
+            finally:
+                self.trusted -= 1
         if op == "loft":
             sections = node.get("sections")
             if not (isinstance(sections, list) and len(sections) >= 2 and all(isinstance(x, dict) for x in sections)):

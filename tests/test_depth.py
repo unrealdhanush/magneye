@@ -158,3 +158,42 @@ def test_a_ring_holds_what_runs_inside_its_tube_but_not_what_sits_in_its_hole():
     inside = assembly.interior([ring, leds, board])
     share = lambda p: (assembly._placed(p, assembly._solid(p)) ^ inside).volume() / assembly._placed(p, assembly._solid(p)).volume()
     assert share(leds) > 0.95 and share(board) < 0.05
+
+
+def _grip_and_door():
+    grip = {**_part("grip_shell", (0, -20, 0), (36, 110, 34), rotation=(8, 0, 0)),
+            "model": {"op": "loft", "sections": [{"at": [0, -55, 0], "w": 26, "d": 24}, {"at": [0, 0, 0], "w": 36, "d": 32, "square": 0.2},
+                                                 {"at": [0, 50, 4], "w": 40, "d": 30, "square": 0.4}]}}
+    door = _part("battery_door", (0, -25, -14), (30, 50, 10), shape="plate", rotation=(8, 0, 0))
+    return grip, door
+
+
+def test_a_moulded_cover_is_a_patch_of_its_body_and_sits_flush():
+    from magneye import assembly
+    from magneye import model as M
+    grip, door = _grip_and_door()
+    anatomy = {"parts": [grip, door]}
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    assert assembly.apply_mould(door, by_id, {"on": "grip_shell", "thickness": 2.5, "region": {"op": "box", "size": [30, 50, 14], "at": [0, 0, -2]}}) is None
+    assembly.resolve(anatomy)
+    placed = {}
+    for p in anatomy["parts"]:
+        cut, frame = assembly.build_part(p, by_id)
+        placed[p["id"]] = cut.transform(M.placement(p, frame))
+    whole = assembly._placed(grip, assembly._solid(grip))
+    # No overlap, nothing standing proud of the body, and only the seam's sliver of the body is missing.
+    assert (placed["grip_shell"] ^ placed["battery_door"]).volume() < 1
+    assert (placed["battery_door"] - whole).volume() < 1
+    assert whole.volume() - (placed["grip_shell"] + placed["battery_door"]).volume() < 0.05 * placed["battery_door"].volume() + 700
+
+
+def test_a_moulded_cover_follows_its_body_when_it_moves():
+    from magneye import assembly
+    grip, door = _grip_and_door()
+    anatomy = {"parts": [grip, door]}
+    assembly.apply_mould(door, {p["id"]: p for p in anatomy["parts"]}, {"on": "grip_shell", "thickness": 2.5})
+    before = assembly._placed(door, assembly._solid(door)).volume()
+    grip["center_mm"] = [0, -20, 3]
+    assembly.resolve(anatomy, pinned={"grip_shell"})
+    # The body moved 3 mm toward the front: the door is rebuilt from the body where it is now.
+    assert door["mould"]["on"] == "grip_shell" and abs(assembly._placed(door, assembly._solid(door)).volume() - before) > 1

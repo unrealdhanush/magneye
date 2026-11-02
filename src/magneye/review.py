@@ -227,6 +227,9 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
         return ToolResult("Changed; the new renders are attached.", f"Reworked {len(done)} parts", attach=await refit(done))
 
     def _recipe(p: dict[str, Any], recipe: Any) -> str | None:
+        if isinstance(recipe, dict) and recipe.get("op") == "mould":
+            return assembly.apply_mould(p, parts, recipe)
+        p.pop("mould", None)
         try:
             solid = M.build(recipe)
         except M.RecipeError as e:
