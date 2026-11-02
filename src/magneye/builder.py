@@ -367,7 +367,7 @@ async def build(
     # The front photo can't show depth; with the parts' real shapes built, a side photo fits it.
     await _fit_depth(work, outline, found_side, emit)
     # Last, the parts are made to fit together like building blocks: holders get pockets, colliding parts move apart.
-    fitted_parts = assembly.resolve(work)
+    fitted_parts = await asyncio.to_thread(assembly.resolve, work)
     if fitted_parts:
         pockets, moves = sum("pocket" in c for c in fitted_parts), sum("moved" in c for c in fitted_parts)
         await emit({"type": "step", "agent": "builder", "tool": "fit_parts", "status": "done",
@@ -430,7 +430,7 @@ async def _fit_depth(work: dict[str, Any], outline: fit.Outline, found_side: tup
                 solids[p["id"]] = M.build(p["model"])
             except M.RecipeError:
                 pass
-    found = depth.fit_depth(work, outline, side_outline, side["front_points"], bool(side.get("upright")), solids=solids)
+    found = await asyncio.to_thread(depth.fit_depth, work, outline, side_outline, side["front_points"], bool(side.get("upright")), solids=solids)
     if not found:
         await emit({"type": "step", "agent": "builder", "tool": "fit_depth", "status": "done",
                     "text": f"Checked the depth against {side['title']} (front to the image's {side['front_points']}); "

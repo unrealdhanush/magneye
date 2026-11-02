@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from typing import Any
@@ -135,7 +136,7 @@ async def respond(
 
     async def changed(part_ids: list[str]) -> None:
         # The parts still fit together: the ones just edited stay put, the rest give way or take grooves.
-        assembly.resolve(anatomy, set(part_ids))
+        await asyncio.to_thread(assembly.resolve, anatomy, set(part_ids))
         anatomy["revision"] = anatomy.get("revision", 0) + 1
         await emit({"type": "anatomy", "anatomy": anatomy})
         await emit({"type": "action", "action": {"type": "highlight", "part_ids": part_ids}})

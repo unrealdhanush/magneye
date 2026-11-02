@@ -31,5 +31,6 @@ primary_region = "iad"
     timeout = "5s"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
+  # Building and rendering a model's meshes needs headroom: 1 GB ran out mid-build.
+  size = "shared-cpu-2x"
+  memory = "2gb"

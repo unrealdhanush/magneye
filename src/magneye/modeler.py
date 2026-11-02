@@ -3,6 +3,7 @@ models from the photo's viewpoint next to the photo itself."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from typing import Any
@@ -162,14 +163,16 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
         return ToolResult(json.dumps(report), summary, ok=bool(built) or not report)
 
     async def view_models(_: dict[str, Any]) -> ToolResult:
-        sheet = _panels(photo, box, anatomy, solids)
+        # Rendering runs off the event loop, so the stream's keep-alives and health checks still get through.
+        sheet = await asyncio.to_thread(_panels, photo, box, anatomy, solids)
+        side_sheet = await asyncio.to_thread(_side_panels, side, anatomy, solids) if side else None
         now = score()
         score_text = f" Overlap with SAM's outline of the object: {now:.0%} (higher is better)." if now is not None else ""
         gaps = [i for i in geometry_issues(anatomy) if "apart; move them to touch" in i]
         joins = (" Joined parts that don't touch yet: " + " ".join(gaps)) if gaps else ""
         attach = [meta.image_part(sheet), {"type": "text", "text": "Left: the photo. Middle: your parts drawn over the photo where the camera would see them (unmodeled parts as boxes); they should cover the object, each in its real place. Right: the internals."}]
         if side:
-            attach += [meta.image_part(_side_panels(side, anatomy, solids)), {"type": "text", "text":
+            attach += [meta.image_part(side_sheet), {"type": "text", "text":
                        f"A real photo of the {'side' if side.get('front_points') in depth.AZIMUTH else side['view'] + ' side'} ({side.get('note', '')}; it may be turned or tilted, so compare shapes, "
                        f"not orientation) next to your outer parts seen from that side. The main photo can't show depth: check here "
                        f"that each part's tilt, depth and how it joins its neighbours match the real object, and fix what doesn't."}]

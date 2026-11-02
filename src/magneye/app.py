@@ -72,7 +72,21 @@ def _read_json(path: Path) -> Any:
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=1))
+    # Written beside and renamed into place, so a crash mid-write never leaves half a file.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(value, indent=1))
+    tmp.replace(path)
+
+
+def _trace(path: Path) -> list[dict[str, Any]]:
+    """The recorded events; a line cut short by a crash is skipped."""
+    out = []
+    for line in path.read_text(errors="ignore").splitlines() if path.exists() else []:
+        try:
+            out.append(json.loads(line.strip("\x00")))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 
 def _normalize_image(raw: bytes) -> tuple[bytes, tuple[int, int]]:
@@ -154,7 +168,7 @@ def get_session(sid: str) -> dict[str, Any]:
             "anatomy": _read_json(d / "anatomy.json"), "ground": _read_json(d / "ground.json"),
             "has_mesh": (d / "shell.glb").exists(),
             "original_url": f"/api/sessions/{sid}/original.jpg" if (d / "original.jpg").exists() else None,
-            "trace": [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []}
+            "trace": _trace(trace)}
 
 
 def _stream(d: Path, work: Callable[[Emit], Awaitable[None]]) -> StreamingResponse:

@@ -9,6 +9,7 @@ design until the renders look like the real thing.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from typing import Any
@@ -36,7 +37,7 @@ PART_DEFAULTS: dict[str, Any] = {
 
 REVIEW_SYSTEM = f"""You are Magneye's reviewer. The 3D model of the object in the photo is built; before the user sees it, look at it the way they will (assembled, from every side) and fix what makes it unlike the real object.
 
-The renders show the finished model: outer parts in their colours, and every internal part that can be seen from outside painted magenta and labelled. In the real object nothing inside shows: every magenta patch is a flaw. Fix each at its cause, using what you know about the real object (the research, the teardown and its photos):
+The renders show the finished model: outer parts in their colours, and every internal part that can be seen from outside painted magenta and labelled. In the real object nothing inside shows: every magenta patch is a flaw. Look just as hard for what the checks can't measure: an outer part poking out through another (a handle's end showing through a faceplate), a cover or panel standing off the body instead of flush in it, a trigger or button floating free, shapes and proportions unlike the photo. Fix each at its cause, using what you know about the real object (the research, the teardown and its photos):
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
@@ -126,6 +127,19 @@ def _draw(anatomy: dict[str, Any], solids: dict[str, Manifold], view: tuple[floa
     return im, showing, total, where
 
 
+def _clashes(anatomy: dict[str, Any]) -> list[str]:
+    """Outer parts cut for other outer parts that are not much smaller than them: likely one passing through the other
+    rather than a control set into a surface."""
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    out = []
+    for host in anatomy["parts"]:
+        for gid in host.get("cuts") or []:
+            guest = by_id.get(gid)
+            if guest and host["kind"] != "internal" and guest["kind"] != "internal" and max(guest["size_mm"]) >= 0.4 * max(host["size_mm"]):
+                out.append(f"{gid} runs into {host['id']}")
+    return out
+
+
 def views(anatomy: dict[str, Any]) -> list[tuple[str, tuple[float, float, float]]]:
     cam = anatomy["object"].get("camera") or {}
     az, el = float(cam.get("azimuth_deg") or 0), float(cam.get("elevation_deg") or 0)
@@ -180,12 +194,17 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
         image, flaws = sheet(anatomy, photo, box, side)
         state["flaws"] = flaws
         text = ("Flaws: " + "; ".join(flaws)) if flaws else "No internal part shows from outside and none was trimmed."
+        clashes = _clashes(anatomy)
+        if clashes:
+            text += (" Outer parts that run into each other (one is cut where the other passes through it; fine for a "
+                     "button set into a plate, wrong where a body pokes out through a cover): " + "; ".join(clashes))
         return [meta.image_part(image), {"type": "text", "text": text}], flaws
 
     async def refit(edited: set[str]) -> list[dict[str, Any]]:
-        assembly.resolve(anatomy, edited)
+        # Geometry work runs off the event loop, so the stream's keep-alives and health checks still get through.
+        await asyncio.to_thread(assembly.resolve, anatomy, edited)
         await emit({"type": "anatomy", "anatomy": A.sanitize(json.loads(json.dumps(anatomy)))})
-        attach, flaws = look()
+        attach, flaws = await asyncio.to_thread(look)
         return [{"type": "text", "text": f"The model after your edits ({len(flaws)} flaws left):"}, *attach]
 
     async def place_parts(a: dict[str, Any]) -> ToolResult:
@@ -265,12 +284,12 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
         Tool("remove_part", "Remove a part.", params({"id": {"type": "string"}}), remove_part),
         Tool("finish", "Finish the review.", params({"summary": {"type": "string"}}), finish),
     ]
-    attach, flaws = look()
+    attach, flaws = await asyncio.to_thread(look)
     await emit({"type": "step", "agent": "builder", "tool": "review", "status": "done",
                 "text": f"Rendered the finished model from eight sides: {len(flaws)} flaws" if flaws else
                         "Rendered the finished model from eight sides: nothing inside shows"})
-    if not flaws:
-        return []
+    # Even with nothing showing through, the model can see what no check measures: parts poking through each other,
+    # slabs standing off the body, shapes unlike the photo.
     brief = [{k: p[k] for k in ("id", "name", "kind", "shape", "size_mm", "center_mm", "rotation_deg") if k in p} for p in anatomy["parts"]]
     research = (anatomy.get("research") or {}).get("notes", "")
     photos = [x for p in inside or [] for x in ({"type": "text", "text": f"Inside view, iFixit “{p['guide']}” step {p['step']}: {p['shows']}"},
