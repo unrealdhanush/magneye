@@ -40,7 +40,7 @@ The renders show the finished model: outer parts in their colours, and every int
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
-A part listed as trimmed was cut down to fit inside the shell: the same causes apply. Also fix outer parts that float apart from the body or stick out where the real object is smooth.
+A part listed as trimmed was cut down to fit inside the shell: the same causes apply. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (rounded, tapering, joining its neighbours without steps); without one it is a plain rounded box.
 
 Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); a part's size_mm is in its own frame before its rotation_deg. After your edits the parts are fitted together again (what you placed stays put, the rest gives way) and you get the new renders.
 
@@ -231,7 +231,10 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
         p = {**PART_DEFAULTS, **(a.get("part") or {})}
         if not p.get("id") or p["id"] in parts:
             return ToolResult("A new part needs a fresh snake_case id.", "add_part rejected", ok=False)
-        err = _recipe(p, a["recipe"]) if a.get("recipe") else None
+        # An outer part needs a recipe to take the object's colour and a moulded look: a rounded box at the least.
+        recipe = a.get("recipe") or ({"op": "box", "size": p["size_mm"], "radius": round(0.2 * min(p["size_mm"]), 1)}
+                                     if p["kind"] != "internal" else None)
+        err = _recipe(p, recipe) if recipe else None
         anatomy["parts"].append(p)
         parts[p["id"]] = p
         return ToolResult("Added" + (f", but its recipe failed ({err}) so it is a box" if err else "") + "; renders attached.",
