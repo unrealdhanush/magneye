@@ -60,6 +60,19 @@ def items(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+def one_at_a_time(tools: list[Tool]) -> list[Tool]:
+    """The tools, run one at a time in the order they were called: a turn's calls otherwise run together, and tools
+    that change the model (adding a part while another refits it) must not interleave."""
+    lock = asyncio.Lock()
+
+    def serial(run: Callable[[dict[str, Any]], Awaitable[ToolResult]]) -> Callable[[dict[str, Any]], Awaitable[ToolResult]]:
+        async def go(a: dict[str, Any]) -> ToolResult:
+            async with lock:
+                return await run(a)
+        return go
+    return [Tool(t.name, t.description, t.parameters, serial(t.run)) for t in tools]
+
+
 def params(props: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": props, "required": list(props) if required is None else required}
 

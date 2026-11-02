@@ -411,3 +411,22 @@ def test_the_review_marks_inner_parts_that_show_through():
     Image.new("RGB", (200, 200), "white").save(photo, "JPEG")
     _, flaws = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
     assert any(f.startswith("main_pcb shows through") for f in flaws)
+
+
+def test_tools_that_change_the_model_take_turns():
+    from magneye.agent import Tool, ToolResult, one_at_a_time
+    log = []
+
+    def tool(name):
+        async def run(_):
+            log.append(f"{name} start")
+            await asyncio.sleep(0.01)
+            log.append(f"{name} end")
+            return ToolResult("ok", name)
+        return Tool(name, name, {}, run)
+    a, b = one_at_a_time([tool("add_part"), tool("place_parts")])
+
+    async def both():
+        await asyncio.gather(a.run({}), b.run({}))
+    asyncio.run(both())
+    assert log == ["add_part start", "add_part end", "place_parts start", "place_parts end"]

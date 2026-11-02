@@ -15,7 +15,7 @@ from . import assembly, fit, mates, meta, pose
 from .checks import geometry_issues
 from . import depth
 from . import model as M
-from .agent import Emit, Tool, ToolResult, items, params, run_loop
+from .agent import Emit, Tool, ToolResult, items, one_at_a_time, params, run_loop
 
 MODELER_SYSTEM = f"""You are Magneye's modeler. The anatomy of the object in the photo is verified, but its parts are still plain primitives. Give the parts that define how the object looks and works a real 3D form, as geometry recipes.
 
@@ -316,7 +316,7 @@ async def model(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit
                "and the shells big enough to hold them." if inside else "")}]},
     ]
     score()
-    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=6,
+    await run_loop(agent="builder", model=model_id, messages=messages, tools=one_at_a_time(tools), emit=emit, max_turns=6,
                    reasoning_effort="low", until="finish", max_tokens=24000)
     final = fit.coverage(anatomy, outline) if outline else None
     if final is not None and best and final < best["score"] - 0.03:

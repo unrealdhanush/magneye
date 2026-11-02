@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw
 from . import anatomy as A
 from . import assembly, meta, pose
 from . import model as M
-from .agent import Emit, Tool, ToolResult, items, params, run_loop
+from .agent import Emit, Tool, ToolResult, items, one_at_a_time, params, run_loop
 
 TILE = 360
 FLAW = np.array([255, 40, 200], np.float32)
@@ -308,6 +308,6 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
             f"Object: {anatomy['object']['name']}, {anatomy['object']['dimensions_mm']} mm.\nParts: {json.dumps(brief)}\n"
             + (f"\nResearch notes:\n{research[:6000]}\n" if research else "") + "\nThe finished model:"}, *attach]},
     ]
-    await run_loop(agent="builder", model=model_id, messages=messages, tools=tools, emit=emit, max_turns=5,
+    await run_loop(agent="builder", model=model_id, messages=messages, tools=one_at_a_time(tools), emit=emit, max_turns=5,
                    reasoning_effort="medium", until="finish", max_tokens=24000)
     return state.get("flaws", [])

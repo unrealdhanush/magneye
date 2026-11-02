@@ -12,7 +12,7 @@ from PIL import Image
 
 from . import anatomy as A
 from . import assembly, ifixit, meta
-from .agent import Emit, Tool, ToolResult, items, params, run_loop
+from .agent import Emit, Tool, ToolResult, items, one_at_a_time, params, run_loop
 from .ground import SegmentCache
 
 PART_SCHEMA = A.ANATOMY_SCHEMA["properties"]["parts"]["items"]
@@ -197,7 +197,7 @@ async def respond(
     ]
     messages.append({"role": "user", "content": prompt})
     async with httpx.AsyncClient(timeout=ifixit.TIMEOUT, headers=ifixit.HEADERS, follow_redirects=True) as client:
-        text = await run_loop(agent="guide", model=model, messages=messages, tools=tools + ifixit.tools(ifixit.Session(client)),
+        text = await run_loop(agent="guide", model=model, messages=messages, tools=one_at_a_time(tools) + ifixit.tools(ifixit.Session(client)),
                               emit=emit, max_turns=6, reasoning_effort="low")
     if text:
         await emit({"type": "answer", "text": text})
