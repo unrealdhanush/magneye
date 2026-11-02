@@ -110,3 +110,39 @@ def test_a_deep_collision_gets_a_groove_instead_of_a_long_push():
     assembly.resolve({"parts": [board, cell]}, pinned={"battery_aa"})
     # Pushing the board clear would take 9 mm or more at once: it stays, and takes a groove for the cell.
     assert board["center_mm"] == [0, 0, 0] and "battery_aa" in board.get("cuts", [])
+
+
+def test_an_inner_part_drafted_wider_than_its_shell_is_brought_inside():
+    from magneye import assembly
+    shell = _part("grip_shell", (0, 0, 0), (36, 100, 36))
+    # A board 46 mm wide in a 36 mm grip, and a motor drafted half out through the side.
+    board = _part("main_pcb", (0, 0, 0), (46, 60, 4), kind="internal", shape="plate")
+    motor = _part("haptic_motor", (17, -30, 8), (12, 12, 12), kind="internal", shape="cylinder")
+    anatomy = {"parts": [shell, board, motor]}
+    assembly.resolve(anatomy)
+    inside = assembly.interior(anatomy["parts"])
+    for p in (board, motor):
+        solid = assembly._placed(p, assembly._solid(p))
+        assert (solid - inside).volume() < 0.05 * solid.volume(), p["id"]
+    # The board was slimmed across, not shortened: it is still as long as drafted.
+    assert board["size_mm"][0] < 36 and board["size_mm"][1] >= 54
+
+
+def test_inner_parts_never_show_through_the_skin():
+    from magneye import assembly
+    from magneye import model as M
+    shell = _part("grip_shell", (0, 0, 0), (36, 100, 36))
+    board = _part("main_pcb", (0, 0, 0), (40, 60, 4), kind="internal", shape="plate")
+    anatomy = {"parts": [shell, board]}
+    # Pinned, so the fitting leaves it sticking out: the skin stays closed and the board is trimmed to the inside.
+    assembly.resolve(anatomy, pinned={"main_pcb"})
+    by_id = {p["id"]: p for p in anatomy["parts"]}
+    inside = assembly.interior(anatomy["parts"])
+    cut, frame = assembly.build_part(shell, by_id, inside)
+    skin = cut.transform(M.placement(shell, frame))
+    # What the pocket took out stays under the surface: the outer wall is whole.
+    removed = (assembly._placed(shell, assembly._solid(shell)) - skin).bounding_box()
+    assert removed[0] > -18 + 1 and removed[3] < 18 - 1
+    cut, frame = assembly.build_part(board, by_id, inside)
+    trimmed = cut.transform(M.placement(board, frame))
+    assert trimmed.bounding_box()[3] - trimmed.bounding_box()[0] < 36

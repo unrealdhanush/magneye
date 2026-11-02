@@ -316,7 +316,7 @@ class Ask(BaseModel):
     prompt: str
 
 
-MODELS_FORMAT = "4"  # 2: blueprint outlines; 3: outlines placed by size and rotation; 4: pockets carved
+MODELS_FORMAT = "5"  # 2: blueprint outlines; 3: outlines placed by size and rotation; 4: pockets carved; 5: kept under the skin
 
 
 @app.get("/api/sessions/{sid}/models")
@@ -333,14 +333,17 @@ def session_models(sid: str) -> dict[str, Any]:
                     [[by_id[g].get("model"), by_id[g]["size_mm"], by_id[g].get("rotation_deg"), by_id[g]["center_mm"]]
                      for g in p.get("cuts") or [] if g in by_id], p["center_mm"] if p.get("cuts") else None]
               for pid, p in modeled.items()}
-    key = hashlib.sha256((MODELS_FORMAT + json.dumps(placed, sort_keys=True)).encode()).hexdigest()[:16]
+    # Inner parts are trimmed to the space the outer parts close in, so that is part of the key too.
+    shell = [[p.get("model"), p["size_mm"], p.get("rotation_deg"), p["center_mm"]] for p in anatomy["parts"] if p["kind"] == "exterior"]
+    key = hashlib.sha256((MODELS_FORMAT + json.dumps([placed, shell], sort_keys=True)).encode()).hexdigest()[:16]
     cached = _read_json(d / "models.json")
     if cached and cached.get("key") == key:
         return cached
     meshes: dict[str, Any] = {}
+    inside = assembly.interior(anatomy["parts"])
     for pid, part in modeled.items():
         try:
-            cut, frame = assembly.build_part(part, by_id)
+            cut, frame = assembly.build_part(part, by_id, inside)
             meshes[pid] = model_kit.encode(cut, part, frame)
         except model_kit.RecipeError:
             continue  # an edited part whose recipe no longer builds is drawn as its primitive

@@ -34,6 +34,16 @@ HOLDER_WORDS = {"shell", "housing", "case", "casing", "body", "plate", "faceplat
                 "handle", "base", "dock", "lid", "door", "panel", "deck"}
 # An outer part holds an inner one this many times smaller than itself (a shell around a board), not a neighbour.
 OUTER_HOLDS = 3.0
+# An inner part may poke out of the object by this share of its volume (a connector at a port); beyond it, it is
+# nudged inward and, if that isn't enough, slimmed along the sides that stick out (a board drafted wider than its grip).
+MAX_OUTSIDE = 0.01
+# Inner parts keep this much wall between them and the outside, or the pocket carved for them opens through it.
+WALL_MM = 1.5
+NUDGE_MM = 1.0
+MAX_NUDGE_MM = 8.0
+SLIM_STEP = 0.94
+MIN_SCALE = 0.6
+CONTAIN_STEPS = 30
 
 
 def _solid(part: dict[str, Any]) -> Manifold:
@@ -139,6 +149,75 @@ def _container(mover: dict[str, Any], parts: list[dict[str, Any]], placed: dict[
     return max(around, key=lambda s: s.volume()) if around else None
 
 
+def _envelope(parts: list[dict[str, Any]], placed: dict[str, Manifold]) -> Manifold | None:
+    """The space the outer parts close in: the hull of each (a shell's hull fills its hollow). An inner part outside
+    it shows through the outside of the model."""
+    hulls = []
+    for p in parts:
+        if p["kind"] != "exterior":
+            continue
+        hulls.append(placed[p["id"]].hull())
+    if not hulls:
+        return None
+    out = hulls[0]
+    for h in hulls[1:]:
+        out = out + h
+    return out
+
+
+def _contain(parts: list[dict[str, Any]], own: dict[str, Manifold], pinned: frozenset[str] | set[str],
+             drafted: dict[str, tuple[list[float], list[float]]]) -> list[str]:
+    """Bring inner parts that stick out of the object back inside it: the move or slimming that leaves least of the
+    part outside, a step at a time, preferring moves, until at most MAX_OUTSIDE is out. Moves and slimming are bounded
+    from the part as `drafted` (centre, size). Pinned parts stay as placed."""
+    placed = {p["id"]: _placed(p, own[p["id"]]) for p in parts}
+    env = _envelope(parts, placed)
+    if env is None:
+        return []
+    changes = []
+    for p in parts:
+        if p["kind"] != "internal" or p["id"] in pinned:
+            continue
+        verts = np.asarray(own[p["id"]].hull().to_mesh().vert_properties)[:, :3]
+        def outside(centre: list[float], size: list[float]) -> float:
+            # The part's hull, grown by the wall: a hull of points is far quicker than booleans on the real solid.
+            place = M.placement({**p, "center_mm": centre, "size_mm": size}, own[p["id"]])
+            at = verts @ place[:, :3].T + place[:, 3]
+            s = Manifold.hull_points(np.vstack([at + d for d in np.vstack([np.eye(3), -np.eye(3)]) * WALL_MM]))
+            return (s - env).volume() / max(s.volume(), 1e-6)
+        start_c, start_s = drafted[p["id"]]
+        centre, size = list(p["center_mm"]), list(p["size_mm"])
+        first_c, first_s = centre, size
+        share = before = outside(centre, size)
+        for _ in range(CONTAIN_STEPS):
+            if share <= MAX_OUTSIDE:
+                break
+            tries = []
+            for axis in range(3):
+                for sign in (1, -1):
+                    c = list(centre)
+                    c[axis] = round(c[axis] + sign * NUDGE_MM, 1)
+                    if float(np.linalg.norm(np.subtract(c, start_c))) <= MAX_NUDGE_MM:
+                        tries.append((c, size))
+                if size[axis] * SLIM_STEP >= MIN_SCALE * start_s[axis]:
+                    s = list(size)
+                    s[axis] = round(s[axis] * SLIM_STEP, 1)
+                    tries.append((centre, s))
+            # A move keeps the part as drafted, so a slimming has to do clearly better to win.
+            scored = [(outside(*t), t) for t in tries]
+            best, (c, s) = min(scored, key=lambda x: x[0] + (0.01 if x[1][1] is not size else 0))
+            if best >= share - 1e-3:
+                break
+            centre, size, share = c, s, best
+        if share < before - 1e-3:
+            p["center_mm"], p["size_mm"] = centre, size
+            moved = float(np.linalg.norm(np.subtract(centre, first_c)))
+            changes.append(f"{p['id']} brought inside the object ({100 * before:.0f}% to {100 * share:.0f}% outside"
+                           + (f"; moved {moved:.0f} mm" if moved >= 0.5 else "")
+                           + (f"; slimmed to {' x '.join(f'{v:g}' for v in size)} mm" if size != first_s else "") + ")")
+    return changes
+
+
 def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """Make the parts fit together without sharing space: holders get pockets for what they hold (recorded in
     "cuts"), peers are pushed apart. `pinned` parts (the ones the user just placed) never move: what collides with
@@ -148,6 +227,9 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
     changes: list[str] = []
     for p in parts:
         p.pop("cuts", None)
+    # Inner parts are brought inside the object first, so the pushes start from a layout that fits in it.
+    drafted = {p["id"]: (list(p["center_mm"]), list(p["size_mm"])) for p in parts}
+    changes += _contain(parts, own, pinned, drafted)
     start = {p["id"]: list(p["center_mm"]) for p in parts}
     for _ in range(PUSH_ROUNDS):
         placed = {p["id"]: _placed(p, own[p["id"]]) for p in parts}
@@ -203,6 +285,8 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
                     moved = True
         if not moved:
             break
+    # A push can nudge a part back out through a wall; it is brought in again before the grooves are cut.
+    changes += _contain(parts, own, pinned, drafted)
     # Whatever pushing couldn't separate (parts packed on every side) is settled with a groove in the bigger part,
     # so in the end no two parts share space.
     placed = {p["id"]: _placed(p, own[p["id"]]) for p in parts}
@@ -228,25 +312,57 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
     return list(dict.fromkeys(changes))
 
 
-def build_part(part: dict[str, Any], parts: dict[str, dict[str, Any]]) -> tuple[Manifold, Manifold]:
+def _under_skin(solid: Manifold) -> Manifold:
+    """The inside of an outer part: its hull shrunk by WALL_MM on every side (a convex hull, so scaling it about its
+    centre is close to a true inward offset)."""
+    h = solid.hull()
+    b = h.bounding_box()
+    centre = [(b[i] + b[3 + i]) / 2 for i in range(3)]
+    span = [max(b[3 + i] - b[i], 1e-6) for i in range(3)]
+    factor = [max(v - 2 * WALL_MM, 0.5 * v) / v for v in span]
+    return h.translate([-c for c in centre]).scale(factor).translate(centre)
+
+
+def interior(parts: list[dict[str, Any]]) -> Manifold | None:
+    """The space under the object's skin: where inner parts may show, so none pokes out through an outer surface."""
+    inside = [_under_skin(_placed(p, _solid(p))) for p in parts if p["kind"] == "exterior"]
+    if not inside:
+        return None
+    out = inside[0]
+    for h in inside[1:]:
+        out = out + h
+    return out
+
+
+def build_part(part: dict[str, Any], parts: dict[str, dict[str, Any]],
+               inside: Manifold | None = None) -> tuple[Manifold, Manifold]:
     """(solid with its pockets carved, solid as built). Both are in the part's own recipe frame; the uncut one gives
-    the bounds the viewer scales by, so a pocket that opens through a face doesn't resize the part."""
+    the bounds the viewer scales by, so a pocket that opens through a face doesn't resize the part. With `inside`
+    (the object's interior), an inner part is trimmed to it and an outer part's pockets for inner parts stop under
+    its skin, so nothing inside shows through the outside."""
     solid = M.build(part["model"]) if part.get("model") else Manifold.cube(part["size_mm"], True)
     cut = solid
-    if part.get("cuts"):
-        place = M.placement(part, solid)
-        a, t = place[:, :3], place[:, 3]
-        inv = np.linalg.inv(a)
-        back = np.hstack([inv, (-inv @ t).reshape(3, 1)])
-        for gid in part["cuts"]:
-            guest = parts.get(gid)
-            if guest is None:
-                continue
-            try:
-                pocket = _grown(_placed(guest, _solid(guest)), CLEARANCE_MM).transform(back)
-                carved = cut - pocket
-            except Exception:  # a degenerate pocket is skipped rather than failing the part
-                continue
-            if not carved.is_empty() and carved.volume() > 0.05 * solid.volume():
-                cut = carved
+    place = M.placement(part, solid)
+    a, t = place[:, :3], place[:, 3]
+    inv = np.linalg.inv(a)
+    back = np.hstack([inv, (-inv @ t).reshape(3, 1)])
+    skin = _under_skin(solid.transform(place)).transform(back) if part["kind"] == "exterior" and inside else None
+    for gid in part.get("cuts") or []:
+        guest = parts.get(gid)
+        if guest is None:
+            continue
+        try:
+            pocket = _grown(_placed(guest, _solid(guest)), CLEARANCE_MM).transform(back)
+            if skin is not None and guest["kind"] == "internal":
+                pocket = pocket ^ skin
+            carved = cut - pocket
+        except Exception:  # a degenerate pocket is skipped rather than failing the part
+            continue
+        if not carved.is_empty() and carved.volume() > 0.05 * solid.volume():
+            cut = carved
+    if inside is not None and part["kind"] == "internal":
+        # Trimmed only when it is mostly inside: a part drafted to sit out in the open stays whole.
+        trimmed = cut ^ inside.transform(back)
+        if not trimmed.is_empty() and trimmed.volume() >= 0.6 * cut.volume():
+            cut = trimmed
     return cut, solid
