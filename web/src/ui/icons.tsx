@@ -58,3 +58,12 @@ export const IconChevron = (p: SVGProps<SVGSVGElement>) => (
 export const IconPlus = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>
 )
+export const IconShare = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M12 15V4.5M8 8l4-4 4 4" /><path d="M5.5 12v6.5h13V12" /></svg>
+)
+export const IconDownload = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M12 4v10.5M8 10.5l4 4 4-4" /><path d="M5 19.5h14" /></svg>
+)
+export const IconLink = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>
+)

@@ -30,6 +30,16 @@ export interface ViewerProps {
   paused?: boolean
   /** Real meshes for modeled parts, unit-sized (fitted to each part's size here). */
   models?: Map<string, THREE.BufferGeometry>
+  /** Receives the export handle once the canvas is ready (and null when it goes away). */
+  onReady?: (handle: ViewerHandle | null) => void
+}
+
+/** What the share menu can ask of the 3D view. */
+export interface ViewerHandle {
+  /** The view as shown, at the canvas resolution, on the stage's background. */
+  png: () => Promise<Blob>
+  /** The model as currently exploded, in metres, as a binary glTF. */
+  glb: () => Promise<Blob>
 }
 
 /** Per-part delay between arrivals during assembly; capped so the whole build-up stays around a second. */
@@ -50,10 +60,11 @@ export function Viewer(props: ViewerProps) {
   const [high, setHigh] = useState(true)
   return (
     // flat: no tone mapping in the renderer, since the effects chain applies it once at the end.
-    <Canvas flat frameloop={props.paused ? 'never' : 'always'} camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={high ? [1, 2] : 1} gl={{ antialias: false, alpha: true }}
+    <Canvas flat frameloop={props.paused ? 'never' : 'always'} camera={{ position: startCamera(props.anatomy), fov: 38 }} dpr={high ? [1, 2] : 1} gl={{ antialias: false, alpha: true, preserveDrawingBuffer: true }}
       onCreated={({ gl }) => { gl.localClippingEnabled = true }} onPointerMissed={() => props.onSelect(null)}>
       <PerformanceMonitor onIncline={() => setHigh(true)} onDecline={() => setHigh(false)} flipflops={3} onFallback={() => setHigh(false)} />
       <Effects high={high} />
+      <ExportHandle onReady={props.onReady} s={worldScale(props.anatomy)} />
       <StudioEnvironment />
       <hemisphereLight args={['#ffffff', '#445566', 0.35]} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
@@ -69,6 +80,50 @@ export function Viewer(props: ViewerProps) {
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={1.2} maxDistance={12} />
     </Canvas>
   )
+}
+
+/** Registers what the share menu needs from the canvas: a PNG of the view and a glTF of the model. */
+function ExportHandle({ onReady, s }: { onReady?: (h: ViewerHandle | null) => void; s: number }) {
+  const gl = useThree(st => st.gl)
+  const scene = useThree(st => st.scene)
+  useEffect(() => {
+    if (!onReady) return
+    onReady({
+      png: async () => {
+        const src = gl.domElement
+        const c = document.createElement('canvas')
+        c.width = src.width; c.height = src.height
+        const ctx = c.getContext('2d')!
+        const dark = document.documentElement.dataset.theme === 'dark'
+        const g = ctx.createRadialGradient(c.width / 2, c.height * 0.35, 0, c.width / 2, c.height * 0.35, Math.max(c.width, c.height) * 0.8)
+        g.addColorStop(0, dark ? '#141a26' : '#ffffff'); g.addColorStop(1, dark ? '#06080c' : '#e8ecf4')
+        ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height)
+        ctx.drawImage(src, 0, 0)
+        return new Promise<Blob>((resolve, reject) => c.toBlob(b => (b ? resolve(b) : reject(new Error('The image could not be created.'))), 'image/png'))
+      },
+      glb: async () => {
+        const root = scene.getObjectByName('magneye-model')
+        if (!root) throw new Error('The model isn’t ready yet.')
+        // Export a copy without the effects (path lines, labels, hidden helpers), scaled from scene units to metres.
+        const copy = root.clone(true)
+        const drop: THREE.Object3D[] = []
+        copy.traverse(o => {
+          const f = o as unknown as Record<string, boolean>
+          if (!o.visible || f.isLine || f.isLine2 || f.isLineSegments || f.isLineSegments2 || f.isPoints || f.isSprite) drop.push(o)
+        })
+        drop.forEach(o => o.parent?.remove(o))
+        copy.scale.multiplyScalar(1 / (s * 1000))
+        copy.updateMatrixWorld(true)
+        const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js')
+        const buffer = await new Promise<ArrayBuffer>((resolve, reject) =>
+          new GLTFExporter().parse(copy, r => (r instanceof ArrayBuffer ? resolve(r) : reject(new Error('The model could not be exported.'))), reject,
+            { binary: true, onlyVisible: true, maxTextureSize: 2048 }))
+        return new Blob([buffer], { type: 'model/gltf-binary' })
+      },
+    })
+    return () => onReady(null)
+  }, [gl, scene, s, onReady])
+  return null
 }
 
 /** An invisible box around the main body, so the camera frames it rather than any straps or cables. */
@@ -124,7 +179,7 @@ function Scene(p: ViewerProps) {
   const shellDelay = p.anatomy.parts.length * stagger
 
   return (
-    <group>
+    <group name="magneye-model">
       {ordered.map(part => (
         <PartMesh key={part.id} part={part} s={s} maxLayer={maxLayer} registry={registry} delay={(rank.get(part.id) ?? 0) * stagger} {...p} />
       ))}

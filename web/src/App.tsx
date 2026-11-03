@@ -7,6 +7,7 @@ import { Inspector } from './blueprint/Inspector'
 import { useAnatomyEditor } from './blueprint/useEditor'
 import { SpaceTabs, type Space } from './blueprint/SpaceTabs'
 import { StartScreen } from './ui/StartScreen'
+import { ShareMenu } from './ui/ShareMenu'
 import { Landing } from './landing/Landing'
 import { IconLayers, IconPlus, IconReset, IconSidebar, IconXray } from './ui/icons'
 import {
@@ -14,7 +15,7 @@ import {
   type TraceStep, type Turn,
 } from './ui/panels'
 import { usePartModels } from './viewer/models'
-import { Viewer } from './viewer/Viewer'
+import { Viewer, type ViewerHandle } from './viewer/Viewer'
 
 const sessionFromHash = () => location.hash.match(/^#\/s\/([a-z0-9]+)$/)?.[1] ?? null
 const wantsStartFromHash = () => location.hash === '#/new'
@@ -105,6 +106,9 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
     return !open
   })
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // The 3D view's export handle, for the share menu.
+  const viewerApi = useRef<ViewerHandle | null>(null)
+  const setViewerApi = useCallback((h: ViewerHandle | null) => { viewerApi.current = h }, [])
   const [focusIds, setFocusIds] = useState<string[]>([])
   const [assembleAt, setAssembleAt] = useState<number | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -257,7 +261,7 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
         {anatomy ? (
           <Viewer anatomy={anatomy} ground={ground} imageUrl={session.image_url} meshUrl={meshUrl} explode={explode} xray={xray}
             playback={playback} focusIds={focusIds} selectedId={selectedId} onSelect={setSelectedId} assembleAt={assembleAt} paused={paused}
-            models={models.meshes} />
+            models={models.meshes} onReady={setViewerApi} />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <img src={session.image_url} alt="" className="max-h-[60%] max-w-[60%] rounded-md opacity-60" />
@@ -314,12 +318,16 @@ function Workspace({ sid, sam3d }: { sid: string; sam3d: boolean }) {
             <SpaceTabs space={space} onChange={switchSpace} />
           </div>
         )}
-        <button type="button" onClick={toggleDrawer} aria-expanded={drawer} aria-controls="drawer"
-          title={drawer ? 'Hide the conversation panel' : 'Show the conversation panel'}
-          className={`glass press absolute right-3 top-2 z-10 hidden min-h-tap min-w-tap items-center justify-center gap-1 rounded-lg px-1.5 text-subheadline xl:inline-flex ${drawer ? 'text-ink' : 'text-accent-text'}`}>
-          <IconSidebar className="h-2.5 w-2.5" />
-          <span className="sr-only sm:not-sr-only">{drawer ? 'Hide chat' : 'Chat'}</span>
-        </button>
+        {/* After the Reality/Blueprint tabs in the DOM, so keyboard and screen-reader users reach the main control first. */}
+        <div className="absolute right-3 top-2 z-10 flex items-center gap-1">
+          <ShareMenu name={anatomy?.object.name ?? 'magneye'} space={space} ready={!!anatomy} getViewer={() => viewerApi.current} />
+          <button type="button" onClick={toggleDrawer} aria-expanded={drawer} aria-controls="drawer"
+            title={drawer ? 'Hide the conversation panel' : 'Show the conversation panel'}
+            className={`glass press hidden min-h-tap min-w-tap items-center justify-center gap-1 rounded-lg px-1.5 text-subheadline xl:inline-flex ${drawer ? 'text-ink' : 'text-accent-text'}`}>
+            <IconSidebar className="h-2.5 w-2.5" />
+            <span className="sr-only sm:not-sr-only">{drawer ? 'Hide chat' : 'Chat'}</span>
+          </button>
+        </div>
       </section>
 
       {/* Below 3xl the two groups dissolve (display: contents) and their items interleave by order: object, chat,

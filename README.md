@@ -55,6 +55,8 @@ For frontend development, run `npm run dev` in `web/`. It proxies `/api` to port
 
 The live camera and microphone need a secure context, so use `localhost` or HTTPS.
 
+**Share and export.** The Share button on the stage copies the session's link (anyone with it can open that session) and exports the current work: the 3D model as `.glb` (as currently exploded, in metres) and a PNG of the view from Reality, and the sheet as `.svg` or `.png` from Blueprint.
+
 ## SAM 3D Objects (optional)
 
 `gpu/sam3d.py` deploys SAM 3D Objects on a Modal A100. It needs gated Hugging Face access to `facebook/sam-3d-objects`. Deploy it, then set `SAM3D_URL`. Without it, Magneye uses the shell extruded from SAM 3.1's mask. **Status: written, not yet run.**
