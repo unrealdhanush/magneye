@@ -58,7 +58,7 @@ export function Landing() {
       </section>
 
       <footer className="lp-foot">
-        <p>Built for the Meta Global AI Developer Hackathon with Muse Wonder, SAM 3.1, Muse Image, SAM 3D Objects and Muse Voice Transcribe.</p>
+        <p>Built for the Meta Global AI Developer Hackathon with Muse Wonder, SAM 3.1, Muse Image and Muse Voice Transcribe, with SAM 3D Objects as an optional 3D mesh.</p>
       </footer>
     </div>
   )

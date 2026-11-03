@@ -1,5 +1,20 @@
-import { useEffect, useRef, type CSSProperties, type RefObject } from 'react'
+import { Component, lazy, Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { IconArrow } from '../ui/icons'
+import type { SceneState } from './MouseScene'
+
+const MouseScene = lazy(() => import('./MouseScene'))
+
+function webglOk() {
+  try { return !!document.createElement('canvas').getContext('webgl2') } catch { return false }
+}
+
+/** If the 3D scene throws (lost context, old GPU), say so once and let the CSS illustration carry on. */
+class Boundary extends Component<{ onError: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  componentDidCatch() { this.props.onError() }
+  render() { return this.state.failed ? null : this.props.children }
+}
 
 // Top to bottom, numbered the way the blueprint sheet numbers them. `lift` is the part's layer in the stack.
 const PARTS = [
@@ -18,7 +33,7 @@ const smooth = (t: number) => { const c = Math.min(1, Math.max(0, t)); return c 
  * so the parts glide instead of tracking the wheel in steps. Nothing re-renders React per frame.
  * Reduced motion gets the finished scene, still.
  */
-function useScene(root: RefObject<HTMLElement | null>) {
+function useScene(root: RefObject<HTMLElement | null>, shared: SceneState) {
   useEffect(() => {
     const el = root.current
     if (!el) return
@@ -26,9 +41,9 @@ function useScene(root: RefObject<HTMLElement | null>) {
     const head = document.querySelector('header')
     const measure = () => el.style.setProperty('--lp-head', `${Math.ceil(head?.getBoundingClientRect().height ?? 57)}px`)
     measure()
-    const setPhase = (p: number) => { if (el.dataset.phase !== String(p)) el.dataset.phase = String(p) }
+    const setPhase = (p: number) => { shared.phase = p; if (el.dataset.phase !== String(p)) el.dataset.phase = String(p) }
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      el.classList.add('is-still'); el.style.setProperty('--e', '0.85'); setPhase(2)
+      el.classList.add('is-still'); el.style.setProperty('--e', '0.85'); shared.e = 0.85; setPhase(2)
       return
     }
     const cur = { e: 0, px: 0, py: 0 }, tgt = { e: 0, px: 0, py: 0 }
@@ -39,7 +54,7 @@ function useScene(root: RefObject<HTMLElement | null>) {
         const d = tgt[k] - cur[k]
         if (Math.abs(d) < 0.0005) cur[k] = tgt[k]
         else { cur[k] += d * 0.1; moving = true }
-        el.style.setProperty(`--${k}`, cur[k].toFixed(4))
+        el.style.setProperty(`--${k}`, cur[k].toFixed(4)); shared[k] = cur[k]
       }
       raf = moving ? requestAnimationFrame(tick) : 0
     }
@@ -65,12 +80,42 @@ function useScene(root: RefObject<HTMLElement | null>) {
       removeEventListener('scroll', onScroll); removeEventListener('resize', onScroll); removeEventListener('pointermove', onMove)
       cancelAnimationFrame(raf)
     }
-  }, [root])
+  }, [root, shared])
+}
+
+function CssStage() {
+  return (
+    <div className="lp-scene" aria-hidden="true">
+      <div className="lp-ground" />
+      <div className="lp-layer" style={vars({ '--i': 0 })}><div className="lp-face lp-battery" /></div>
+      <div className="lp-layer" style={vars({ '--i': 1 })}>
+        <div className="lp-face lp-board"><i className="lp-chip" /><i className="lp-chip" /><i className="lp-chip" /></div>
+      </div>
+      <div className="lp-layer lp-layer--sw" style={vars({ '--i': 2 })}><i className="lp-sw lp-sw--l" /><i className="lp-sw lp-sw--r" /></div>
+      <div className="lp-layer" style={vars({ '--i': 3 })}><i className="lp-wheel" /></div>
+      <div className="lp-layer lp-layer--shell" style={vars({ '--i': 4 })}><div className="lp-face lp-shell" /></div>
+    </div>
+  )
 }
 
 export function Hero() {
   const root = useRef<HTMLElement>(null)
-  useScene(root)
+  const stage = useRef<HTMLDivElement>(null)
+  const labels = useRef<HTMLUListElement>(null)
+  const shared = useRef<SceneState>({ e: 0, px: 0, py: 0, phase: 0 }).current
+  const [use3d, setUse3d] = useState(webglOk)
+  const [ready, setReady] = useState(false)
+  const [visible, setVisible] = useState(true)
+  const [still] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useScene(root, shared)
+  // Stop drawing while the hero is off screen.
+  useEffect(() => {
+    const el = stage.current
+    if (!el) return
+    const io = new IntersectionObserver(([x]) => setVisible(!!x?.isIntersecting), { rootMargin: '120px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
 
   return (
     <section ref={root} data-phase="0" aria-labelledby="lp-title" className="lp-hero">
@@ -99,18 +144,16 @@ export function Hero() {
           </div>
         </div>
 
-        <div className="lp-stage">
-          <div className="lp-scene" aria-hidden="true">
-            <div className="lp-ground" />
-            <div className="lp-layer" style={vars({ '--i': 0 })}><div className="lp-face lp-battery" /></div>
-            <div className="lp-layer" style={vars({ '--i': 1 })}>
-              <div className="lp-face lp-board"><i className="lp-chip" /><i className="lp-chip" /><i className="lp-chip" /></div>
-            </div>
-            <div className="lp-layer lp-layer--sw" style={vars({ '--i': 2 })}><i className="lp-sw lp-sw--l" /><i className="lp-sw lp-sw--r" /></div>
-            <div className="lp-layer" style={vars({ '--i': 3 })}><i className="lp-wheel" /></div>
-            <div className="lp-layer lp-layer--shell" style={vars({ '--i': 4 })}><div className="lp-face lp-shell" /></div>
-          </div>
-          <ul className="lp-labels" aria-hidden="true">
+        <div ref={stage} className={`lp-stage${use3d && ready ? ' is-3d' : ''}`}>
+          {!(use3d && ready) && <CssStage />}
+          {use3d && (
+            <Boundary onError={() => setUse3d(false)}>
+              <Suspense fallback={null}>
+                <MouseScene state={shared} labels={labels} visible={visible} still={still} onReady={() => setReady(true)} />
+              </Suspense>
+            </Boundary>
+          )}
+          <ul ref={labels} className="lp-labels" aria-hidden="true">
             {PARTS.map(p => (
               <li key={p.id} data-id={p.id} className="lp-label" style={vars({ '--i': p.lift })}>
                 <span className="lp-bal">{p.n}</span>

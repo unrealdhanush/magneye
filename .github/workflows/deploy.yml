@@ -1,6 +1,9 @@
-# Every push to main is tested, then deployed to Fly.io (https://magneye.fly.dev).
-# Needs the repository secret FLY_API_TOKEN (a deploy token: `fly tokens create deploy -a magneye`).
-name: Test and deploy
+# Checks every push and pull request; every push to main that passes is deployed to https://magneye.fly.dev.
+#
+# One-time setup: add a Fly deploy token as the repository secret FLY_API_TOKEN
+#   fly tokens create deploy -a magneye
+# then GitHub: Settings > Secrets and variables > Actions > New repository secret.
+name: CI and deploy
 
 on:
   push:
@@ -8,30 +11,58 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One deploy at a time; a newer push waits for the running one instead of cutting it off mid-rollout.
+permissions:
+  contents: read
+
+# A newer push replaces a queued run. Pull-request checks are cancelled when superseded; a deploy in progress never is.
 concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  api:
+    name: Python tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: "3.11"
       - run: uv sync --frozen
-      - run: uv run pytest -q
+      - run: uv run --no-sync pytest -q
+
+  web:
+    name: Web lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      # tsc -b && vite build: the same step the Docker image runs, so a type error fails here and not mid-deploy.
+      - run: npm run build
 
   deploy:
-    needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    name: Deploy to Fly.io
+    needs: [api, web]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: superfly/flyctl-actions/setup-flyctl@1.5
-      # The Docker image builds the web viewer too, on Fly's remote builder.
-      - run: flyctl deploy --app magneye --remote-only --ha=false --wait-timeout 600
+      - name: Deploy
+        run: flyctl deploy --app magneye --remote-only --ha=false --wait-timeout 600
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Check the live site
+        run: curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors https://magneye.fly.dev/api/health
