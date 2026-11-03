@@ -18,10 +18,10 @@ interface Props {
 
 // ---- Shape of the mouse -----------------------------------------------------------------------------------------
 // Front is -z. The plan is a superellipse that narrows toward the front, the profile is a low dome with a hump at the back.
-const HALF_W = 3.0, HALF_L = 5.6, SQUARE = 3.2
-const half = (z: number) => { const f = Math.min(1, Math.max(0, -z / HALF_L)); return HALF_W * (1 - 0.2 * f * f) }
+const HALF_W = 2.45, HALF_L = 5.8, SQUARE = 2.7
+const half = (z: number) => { const f = Math.min(1, Math.max(0, -z / HALF_L)); return HALF_W * (1 - 0.3 * f * f) }
 const rho = (x: number, z: number) => Math.pow(Math.pow(Math.abs(x) / half(z), SQUARE) + Math.pow(Math.abs(z) / HALF_L, SQUARE), 1 / SQUARE)
-const crown = (z: number) => { const t = (z + HALF_L) / (2 * HALF_L); return 1.5 + 1.1 * Math.exp(-(((t - 0.64) / 0.28) ** 2)) }
+const crown = (z: number) => { const t = (z + HALF_L) / (2 * HALF_L); return 0.95 + 0.85 * Math.exp(-(((t - 0.64) / 0.28) ** 2)) }
 const surface = (x: number, z: number) => { const r = rho(x, z); return r >= 1 ? 0 : crown(z) * Math.pow(1 - r ** 3, 0.45) }
 const sgnPow = (v: number) => Math.sign(v) * Math.pow(Math.abs(v), 2 / SQUARE)
 
@@ -75,15 +75,15 @@ function baseGeometry() {
 
 /** A scroll wheel with square notches round the rim, axis along x. */
 function wheelGeometry() {
-  const teeth = 26, r0 = 0.72, r1 = 0.62, pts: THREE.Vector2[] = []
+  const teeth = 24, r0 = 0.55, r1 = 0.47, pts: THREE.Vector2[] = []
   for (let k = 0; k < teeth; k++) {
     for (const [f, r] of [[0, r0], [0.5, r0], [0.5, r1], [1, r1]] as const) {
       const a = ((k + f) / teeth) * Math.PI * 2
       pts.push(new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r))
     }
   }
-  const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.56, bevelEnabled: false })
-  g.translate(0, 0, -0.28)
+  const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.4, bevelEnabled: false })
+  g.translate(0, 0, -0.2)
   g.rotateY(Math.PI / 2)
   return g
 }
@@ -120,14 +120,14 @@ const std = (color: string, extra: Partial<THREE.MeshStandardMaterialParameters>
   new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.1, transparent: true, ...extra })
 
 // Where each part rests, and how far it lifts at full explosion. Same order and names as the labels beside the scene.
-const REST = { base: 0, battery: 0.6, board: 0.55, sw: 0.63, wheel: 1.5, shell: 0.33 }
+const REST = { base: 0, battery: 0.6, board: 0.55, sw: 0.58, wheel: 1.12, shell: 0.33 }
 const LIFT = { base: -1.2, battery: 0.8, board: 2.6, sw: 4.6, wheel: 6.8, shell: 9.6 }
 const ANCHORS: Record<string, { x: number; z: number; rest: number; lift: number }> = {
-  shell: { x: -3.3, z: 1, rest: REST.shell + 1.2, lift: LIFT.shell },
-  wheel: { x: -2.2, z: -2.4, rest: REST.wheel, lift: LIFT.wheel },
-  switch: { x: -2.6, z: -3.5, rest: REST.sw, lift: LIFT.sw },
-  board: { x: -2.8, z: 0.5, rest: REST.board, lift: LIFT.board },
-  battery: { x: -1.9, z: 2.5, rest: REST.battery, lift: LIFT.battery },
+  shell: { x: -2.8, z: 1, rest: REST.shell + 0.9, lift: LIFT.shell },
+  wheel: { x: -1.6, z: -2.4, rest: REST.wheel, lift: LIFT.wheel },
+  switch: { x: -2.0, z: -3.3, rest: REST.sw, lift: LIFT.sw },
+  board: { x: -2.3, z: 0.5, rest: REST.board, lift: LIFT.board },
+  battery: { x: -1.6, z: 2.5, rest: REST.battery, lift: LIFT.battery },
 }
 
 const readDark = () => {
@@ -157,9 +157,9 @@ function Mouse({ state, labels, still, onReady }: Omit<Props, 'visible'>) {
   const geo = useMemo(() => ({ shell: shellGeometry(), base: baseGeometry(), wheel: wheelGeometry() }), [])
   const tex = useMemo(() => boardTexture(), [])
   const m = useMemo(() => ({
-    shell: new THREE.MeshPhysicalMaterial({ color: '#ececf1', roughness: 0.28, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.12, transparent: true, side: THREE.DoubleSide }),
+    shell: new THREE.MeshPhysicalMaterial({ color: '#5b6577', roughness: 0.3, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.12, transparent: true, side: THREE.DoubleSide }),
     groove: new THREE.MeshBasicMaterial({ color: '#0b0c0f', transparent: true }),
-    base: std('#23262c', { roughness: 0.6 }),
+    base: std('#454b57', { roughness: 0.6 }),
     battery: std('#3a5775', { roughness: 0.4, metalness: 0.2 }),
     batteryLabel: std('#d3dce6', { roughness: 0.7, metalness: 0 }),
     board: std('#ffffff', { map: tex, emissiveMap: tex, emissive: new THREE.Color('#7ffbe0'), emissiveIntensity: 0.45, roughness: 0.45 }),
@@ -179,7 +179,7 @@ function Mouse({ state, labels, still, onReady }: Omit<Props, 'visible'>) {
       return new THREE.TubeGeometry(c, 48, r, 6, false)
     }
     const cross: [number, number][] = []
-    for (let k = 0; k <= 12; k++) { const x = -2.45 + (k / 12) * 4.9; cross.push([x, -1.1 + 0.25 * Math.pow(x / 2.45, 2)]) }
+    for (let k = 0; k <= 12; k++) { const x = -2.0 + (k / 12) * 4.0; cross.push([x, -1.1 + 0.25 * Math.pow(x / 2.0, 2)]) }
     return [line([[0, -5.3], [0, -3.8], [0, -2.6], [0, -1.15]], 0.04), line(cross, 0.035)]
   }, [])
   useEffect(() => () => { for (const x of [...Object.values(geo), ...grooves, tex, ...Object.values(m)]) x.dispose() }, [geo, grooves, tex, m])
@@ -198,12 +198,12 @@ function Mouse({ state, labels, still, onReady }: Omit<Props, 'visible'>) {
   const els = useRef<HTMLElement[]>([])
   useEffect(() => { els.current = Array.from(labels.current?.querySelectorAll<HTMLElement>('[data-id]') ?? []) }, [labels])
 
-  const cur = useRef({ dim: 0, e: 0, ry: 0, rx: 0, shell: new THREE.Color('#ececf1'), frames: 0 })
+  const cur = useRef({ dim: 0, e: 0, ry: 0, rx: 0, shell: new THREE.Color('#5b6577'), frames: 0 })
   const v = useMemo(() => new THREE.Vector3(), [])
   const red = useMemo(() => new THREE.Color('#ff3b30'), [])
   const plain = useMemo(() => ({ body: new THREE.Color('#17191e'), top: new THREE.Color('#d9dae0') }), [])
-  const pearl = useMemo(() => new THREE.Color('#ececf1'), [])
-  const graphite = useMemo(() => new THREE.Color('#2b2d33'), [])
+  const pearl = useMemo(() => new THREE.Color('#5b6577'), [])
+  const graphite = useMemo(() => new THREE.Color('#8e99ad'), [])
 
   useFrame(({ camera, size, clock, scene }, dt) => {
     scene.environmentIntensity = dark.current ? 0.65 : 0.7
@@ -285,16 +285,16 @@ function Mouse({ state, labels, still, onReady }: Omit<Props, 'visible'>) {
         </group>
 
         <group ref={g.battery}>
-          <RoundedBox args={[2.5, 0.5, 3.6]} radius={0.14} smoothness={3} position={[0, 0, 2.5]} material={m.battery} />
-          <mesh position={[0, 0.27, 2.5]} material={m.batteryLabel}><boxGeometry args={[1.9, 0.03, 2.7]} /></mesh>
+          <RoundedBox args={[2.0, 0.5, 3.6]} radius={0.14} smoothness={3} position={[0, 0, 2.5]} material={m.battery} />
+          <mesh position={[0, 0.27, 2.5]} material={m.batteryLabel}><boxGeometry args={[1.5, 0.03, 2.7]} /></mesh>
         </group>
 
         <group ref={g.board}>
-          <RoundedBox args={[4.6, 0.12, 8.8]} radius={0.05} smoothness={2} position={[0, 0, 0.1]} material={m.board} />
+          <RoundedBox args={[3.0, 0.12, 8.0]} radius={0.05} smoothness={2} position={[0, 0, 0.1]} material={m.board} />
           <mesh position={[0, 0.12, -0.6]} material={m.chip}><boxGeometry args={[1.3, 0.14, 1.3]} /></mesh>
-          <mesh position={[-1.2, 0.1, 1.5]} material={m.chip}><boxGeometry args={[0.9, 0.1, 0.9]} /></mesh>
-          <mesh position={[1.1, 0.1, 2.4]} material={m.chip}><boxGeometry args={[0.7, 0.1, 1.4]} /></mesh>
-          {[[-1.6, -1.4], [-1.2, -1.4], [-0.8, -1.4], [1.5, 0.6], [1.5, 1.0]].map(([x, z], i) => (
+          <mesh position={[-0.7, 0.1, 1.5]} material={m.chip}><boxGeometry args={[0.9, 0.1, 0.9]} /></mesh>
+          <mesh position={[0.7, 0.1, 2.4]} material={m.chip}><boxGeometry args={[0.7, 0.1, 1.4]} /></mesh>
+          {[[-1.1, -1.4], [-0.8, -1.4], [-0.5, -1.4], [1.0, 0.6], [1.0, 1.0]].map(([x, z], i) => (
             <mesh key={i} position={[x, 0.13, z]} material={m.cap}><cylinderGeometry args={[0.13, 0.13, 0.2, 12]} /></mesh>
           ))}
         </group>
@@ -303,30 +303,30 @@ function Mouse({ state, labels, still, onReady }: Omit<Props, 'visible'>) {
           {[-1, 1].map(side => {
             const left = side < 0
             return (
-              <group key={side} position={[side * 1.4, 0, -3.5]}>
-                <RoundedBox args={[1.7, 0.55, 1.3]} radius={0.08} smoothness={2} material={left ? m.swBodyL : m.swBody} />
-                <RoundedBox args={[0.9, 0.3, 0.6]} radius={0.06} smoothness={2} position={[0, 0.38, 0]} material={left ? m.swTopL : m.swTop} />
+              <group key={side} position={[side * 0.8, 0, -3.3]}>
+                <RoundedBox args={[1.1, 0.5, 1.1]} radius={0.08} smoothness={2} material={left ? m.swBodyL : m.swBody} />
+                <RoundedBox args={[0.7, 0.22, 0.5]} radius={0.06} smoothness={2} position={[0, 0.31, 0]} material={left ? m.swTopL : m.swTop} />
               </group>
             )
           })}
         </group>
 
         <mesh ref={g.wheel} geometry={geo.wheel} material={m.wheel} position={[0, REST.wheel, -2.4]}>
-          {[-0.3, 0.3].map(x => (
-            <mesh key={x} position={[x, 0, 0]} rotation={[0, Math.PI / 2, 0]} material={m.glow}><circleGeometry args={[0.46, 24]} /></mesh>
+          {[-0.21, 0.21].map(x => (
+            <mesh key={x} position={[x, 0, 0]} rotation={[0, Math.PI / 2, 0]} material={m.glow}><circleGeometry args={[0.34, 24]} /></mesh>
           ))}
         </mesh>
 
         <group ref={g.shell}>
           <mesh geometry={geo.shell} material={m.shell} />
           {grooves.map((gr, i) => <mesh key={i} geometry={gr} material={m.groove} />)}
-          <mesh position={[0, surface(0, -2.4) + 0.02, -2.4]} material={m.groove}><boxGeometry args={[0.95, 0.03, 1.5]} /></mesh>
+          <mesh position={[0, surface(0, -2.4) + 0.02, -2.4]} material={m.groove}><boxGeometry args={[0.75, 0.03, 1.3]} /></mesh>
         </group>
       </group>
 
       <ContactShadows position={[0, -1.75, 0]} opacity={0.5} scale={26} blur={2.6} far={7} resolution={512} />
       <mesh position={[0, -1.74, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[8.5, 8.58, 96]} />
+        <ringGeometry args={[7.2, 7.27, 96]} />
         <meshBasicMaterial color="#38d8ff" transparent opacity={0.35} />
       </mesh>
     </>
@@ -338,7 +338,7 @@ export default function MouseScene({ state, labels, visible, still, onReady }: P
     <Canvas
       dpr={[1, 2]}
       frameloop={still ? 'demand' : visible ? 'always' : 'never'}
-      camera={{ fov: 26, near: 0.1, far: 120, position: [0, 12, 31] }}
+      camera={{ fov: 24, near: 0.1, far: 120, position: [0, 12, 31] }}
       gl={{ antialias: true, alpha: true, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
       style={{ position: 'absolute', inset: 0 }}
       aria-hidden="true"
