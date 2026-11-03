@@ -9,9 +9,9 @@ import { IconArrow } from '../ui/icons'
 export interface Sample { id: string; title: string; file: string; prompt: string; credit?: string }
 
 export const SAMPLES: Sample[] = [
-  { id: 'daytona', title: 'Rolex Daytona', file: '/samples/rolex-daytona.jpg', prompt: 'How does the chronograph work?' },
-  { id: 'quest', title: 'Meta Quest', file: '/samples/meta-quest.jpg', prompt: 'How does it track my head and hands?' },
-  { id: 'ferrari', title: 'Ferrari', file: '/samples/ferrari.jpg', prompt: 'What is under the skin and how does it make it go?' },
+  { id: 'daytona', title: 'Gold Rolex Daytona', file: '/samples/rolex-daytona.jpg', prompt: 'How does the chronograph work?' },
+  { id: 'quest', title: 'Meta Quest 3 headset', file: '/samples/meta-quest.webp', prompt: 'How does it track my head and hands?' },
+  { id: 'controllers', title: 'Meta Quest controllers', file: '/samples/meta-quest-controllers.webp', prompt: 'What happens inside when I push the thumbstick?' },
 ]
 
 async function isImage(url: string): Promise<boolean> {

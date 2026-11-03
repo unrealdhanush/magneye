@@ -55,6 +55,11 @@ export default function App() {
           </h1>
           <div className="flex items-center gap-2">
             {!sid && !wantsStart && <a className="lp-btn lp-btn--sm" href="#/new">Try it</a>}
+            {sid && (
+              <a href="#/new" className="press inline-flex min-h-tap items-center gap-1 rounded-sm px-1.5 text-callout font-semibold text-accent-text no-underline hover:bg-accent/10">
+                <span aria-hidden="true">+</span><span className="max-sm:sr-only">New photo</span>
+              </a>
+            )}
             <ThemeToggle />
           </div>
         </div>
