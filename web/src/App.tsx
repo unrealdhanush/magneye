@@ -7,6 +7,7 @@ import { Inspector } from './blueprint/Inspector'
 import { useAnatomyEditor } from './blueprint/useEditor'
 import { SpaceTabs, type Space } from './blueprint/SpaceTabs'
 import { StartScreen } from './ui/StartScreen'
+import { Landing } from './landing/Landing'
 import { IconLayers, IconPlus, IconReset, IconSidebar, IconXray } from './ui/icons'
 import {
   AgentTrace, AskBar, Conversation, FailureList, ObjectCard, PartDetail, PhotoMasks, ScenarioList,
@@ -16,17 +17,20 @@ import { usePartModels } from './viewer/models'
 import { Viewer } from './viewer/Viewer'
 
 const sessionFromHash = () => location.hash.match(/^#\/s\/([a-z0-9]+)$/)?.[1] ?? null
+const wantsStartFromHash = () => location.hash === '#/new'
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export default function App() {
   const [sid, setSid] = useState<string | null>(sessionFromHash)
+  // The landing page is the front door; #/new opens the upload screen.
+  const [wantsStart, setWantsStart] = useState(wantsStartFromHash)
   const [health, setHealth] = useState<{ has_key: boolean; sam3d: boolean } | null>(null)
   const [uploading, setUploading] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
 
   useEffect(() => { api.health().then(setHealth).catch(() => setHealth(null)) }, [])
   useEffect(() => {
-    const onHash = () => setSid(sessionFromHash())
+    const onHash = () => { setSid(sessionFromHash()); setWantsStart(wantsStartFromHash()); scrollTo(0, 0) }
     addEventListener('hashchange', onHash)
     return () => removeEventListener('hashchange', onHash)
   }, [])
@@ -48,18 +52,22 @@ export default function App() {
           <h1 className="font-display text-headline tracking-wide">
             <a href="#/" className="text-ink no-underline hover:underline">MAGNEYE</a>
           </h1>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            {!sid && !wantsStart && <a className="lp-btn lp-btn--sm" href="#/new">Try it</a>}
+            <ThemeToggle />
+          </div>
         </div>
       </header>
       {/* The workspace uses the whole window; the start screen stays a readable width. */}
       <main id="main" className={`mx-auto px-2 pb-6 sm:px-3 ${sid ? '' : 'max-w-page'}`}>
-        {health && !health.has_key && (
+        {(sid || wantsStart) && health && !health.has_key && (
           <p role="alert" className="mt-2 rounded-md bg-card p-1.5 text-callout text-orange-text shadow-ring">
             ⚠ The server has no MODEL_API_KEY yet. Add your Meta Model API key to <code className="font-mono">.env</code> and restart it.
           </p>
         )}
         {sid ? <Workspace key={sid} sid={sid} sam3d={!!health?.sam3d} />
-          : <StartScreen busy={uploading} error={startError} onStart={start} />}
+          : wantsStart ? <StartScreen busy={uploading} error={startError} onStart={start} />
+          : <Landing />}
       </main>
     </>
   )
