@@ -85,3 +85,24 @@ def test_runs_per_hour_limit_spares_cached_and_built_sessions(monkeypatch, tmp_p
         assert e.status_code == 429
     other = type("R", (), {"headers": {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}, "client": None})()
     A._spend(other)  # a different visitor has their own budget
+
+
+def test_examples_are_listed_when_present_and_open_as_private_copies(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setattr(A, "DATA", tmp_path)
+    src = tmp_path / "sessions" / "exampleone"
+    src.mkdir(parents=True)
+    (src / "image.jpg").write_bytes(_jpeg((9, 9, 9)))
+    (src / "session.json").write_text(json.dumps({"prompt": "", "size": [640, 480]}))
+    (src / "anatomy.json").write_text(json.dumps({"object": {"name": "Kettle"}, "parts": [{"id": "a"}, {"id": "b"}], "scenarios": [{}], "failures": []}))
+    (src / "guide.json").write_text("[]")
+    monkeypatch.setattr(A, "_examples", lambda: [{"id": "exampleone", "blurb": "hi"}, {"id": "missing"}])
+    client = TestClient(A.app)
+    listed = client.get("/api/examples").json()
+    assert [e["id"] for e in listed] == ["exampleone"]
+    assert listed[0]["title"] == "Kettle" and listed[0]["parts"] == 2 and listed[0]["scenarios"] == 1
+    sid = client.post("/api/examples/exampleone/open").json()["id"]
+    assert sid != "exampleone"
+    assert client.get(f"/api/sessions/{sid}").json()["anatomy"]["object"]["name"] == "Kettle"
+    assert not (tmp_path / "sessions" / sid / "guide.json").exists()
+    assert client.post("/api/examples/notlisted/open").status_code == 404

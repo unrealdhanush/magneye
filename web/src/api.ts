@@ -1,4 +1,4 @@
-import type { AgentEvent, Anatomy, Session } from './types'
+import type { AgentEvent, Anatomy, Example, Session } from './types'
 
 export class HttpError extends Error {
   readonly status: number
@@ -43,6 +43,8 @@ export const api = {
     extras.forEach((x, i) => form.append('extras', x, `extra-${i + 1}.jpg`))
     return call<Pick<Session, 'id' | 'image_url' | 'size' | 'prompt'>>('/api/sessions', { method: 'POST', body: form })
   },
+  examples: () => call<Example[]>('/api/examples'),
+  openExample: (id: string) => call<{ id: string }>(`/api/examples/${id}/open`, { method: 'POST' }),
   session: (id: string) => call<Session>(`/api/sessions/${id}`),
   build: (id: string, onEvent: (e: AgentEvent) => void) => stream(`/api/sessions/${id}/build`, {}, onEvent),
   ask: (id: string, prompt: string, onEvent: (e: AgentEvent) => void) => stream(`/api/sessions/${id}/ask`, { prompt }, onEvent),

@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -155,6 +156,41 @@ def session_extra_image(sid: str, n: int) -> FileResponse:
     if not 1 <= n <= len(photos):
         raise HTTPException(404, "no such photo")
     return FileResponse(photos[n - 1], media_type="image/jpeg")
+
+
+# Finished sessions anyone can open in one click, so the product can be judged without a photo or an API budget.
+# Opening one copies it to a private session of the visitor's own, so asking questions or editing never touches the original.
+EXAMPLES_FILE = Path(__file__).with_name("examples.json")
+
+
+def _examples() -> list[dict[str, Any]]:
+    return json.loads(EXAMPLES_FILE.read_text()) if EXAMPLES_FILE.exists() else []
+
+
+@app.get("/api/examples")
+def list_examples() -> list[dict[str, Any]]:
+    """The listed examples whose sessions exist on this server, with a thumbnail and a few counts."""
+    out = []
+    for e in _examples():
+        d = DATA / "sessions" / e["id"]
+        anatomy = _read_json(d / "anatomy.json") if d.is_dir() else None
+        if not anatomy:
+            continue
+        out.append({"id": e["id"], "title": e.get("title") or anatomy["object"]["name"], "blurb": e.get("blurb", ""),
+                    "image_url": f"/api/sessions/{e['id']}/image.jpg", "parts": len(anatomy["parts"]),
+                    "scenarios": len(anatomy.get("scenarios", [])), "failures": len(anatomy.get("failures", []))})
+    return out
+
+
+@app.post("/api/examples/{eid}/open")
+def open_example(eid: str) -> dict[str, str]:
+    if eid not in {e["id"] for e in _examples()}:
+        raise HTTPException(404, "no such example")
+    src = _session_dir(eid)
+    sid = uuid.uuid4().hex[:16]
+    # The conversation starts fresh; everything else (photo, parts, grounding, the reasoning trace) is copied.
+    shutil.copytree(src, DATA / "sessions" / sid, ignore=shutil.ignore_patterns("guide.json", "guide_revision.json", "*.tmp"))
+    return {"id": sid}
 
 
 @app.get("/api/sessions/{sid}")

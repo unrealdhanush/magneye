@@ -68,7 +68,7 @@ export default function App() {
         )}
         {sid ? <Workspace key={sid} sid={sid} sam3d={!!health?.sam3d} />
           : wantsStart ? <StartScreen busy={uploading} error={startError} onStart={start} />
-          : <Landing />}
+          : <Landing onStart={start} busy={uploading} error={startError} />}
       </main>
     </>
   )

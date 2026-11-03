@@ -166,3 +166,9 @@ export type Playback =
   | { kind: 'failure'; failure: Failure; startedAt: number }
   /** Every common failure point at once: culprits glow red and numbered, the rest fades back. */
   | { kind: 'weakpoints'; failures: Failure[]; startedAt: number }
+
+/** A finished session the server offers to open in one click. */
+export interface Example {
+  id: string; title: string; blurb: string; image_url: string
+  parts: number; scenarios: number; failures: number
+}

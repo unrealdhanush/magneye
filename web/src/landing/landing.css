@@ -160,3 +160,31 @@
 .lp-stage.is-3d .lp-label { left: calc(var(--lx, 50%) + 10px); top: calc(var(--ly, 50%) - 14px); }
 .lp-stage > canvas { z-index: 0; }
 .lp-stage .lp-labels { z-index: 1; }
+
+/* Examples: finished sessions that open in one click. */
+.ex-grid { margin: 24px 0 0; padding: 0; list-style: none; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.ex-card { display: grid; width: 100%; text-align: start; overflow: hidden; border-radius: 20px; padding: 0; cursor: pointer; transition: transform 0.25s, box-shadow 0.25s; }
+.ex-card:hover:not(:disabled) { transform: translateY(-3px); }
+.ex-card:disabled { opacity: 0.6; cursor: progress; }
+.ex-card[aria-busy="true"] { opacity: 1; }
+.ex-img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: rgb(var(--ink) / 0.06); }
+.ex-body { display: grid; gap: 6px; padding: 16px 18px 18px; }
+.ex-title { font-weight: 600; font-size: 17px; line-height: 1.25; }
+.ex-blurb { color: rgb(var(--muted)); font-size: 14px; line-height: 1.45; }
+.ex-stats { color: rgb(var(--muted)); font: 12px/1.3 'JetBrains Mono', ui-monospace, monospace; }
+.ex-go { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; color: rgb(var(--accent-text)); font-weight: 600; font-size: 14px; }
+.ex-err { margin-top: 12px; color: rgb(var(--red-text)); }
+@media (prefers-reduced-motion: reduce) { .ex-card { transition: none; } .ex-card:hover:not(:disabled) { transform: none; } }
+
+/* Sample photos: click to run the real pipeline on a photo we provide. */
+.sm-grid { margin: 24px 0 0; padding: 0; list-style: none; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+.sm-card { display: grid; width: 100%; text-align: start; overflow: hidden; border-radius: 20px; padding: 0; cursor: pointer; transition: transform 0.25s; }
+.sm-card:hover:not(:disabled) { transform: translateY(-3px); }
+.sm-card:disabled { opacity: 0.6; cursor: progress; }
+.sm-card[aria-busy="true"] { opacity: 1; }
+.sm-img { width: 100%; aspect-ratio: 1; object-fit: cover; background: rgb(var(--ink) / 0.06); }
+.sm-body { display: grid; gap: 4px; padding: 14px 16px 16px; }
+.sm-title { font-weight: 600; font-size: 16px; }
+.sm-q { color: rgb(var(--muted)); font-size: 13px; line-height: 1.4; }
+.sm-credit { margin: 6px 4px 0; color: rgb(var(--muted)); font-size: 11px; line-height: 1.35; }
+@media (prefers-reduced-motion: reduce) { .sm-card { transition: none; } .sm-card:hover:not(:disabled) { transform: none; } }

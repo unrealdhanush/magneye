@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CameraCapture } from './CameraCapture'
+import { Examples } from '../landing/Examples'
+import { Samples } from '../landing/Samples'
 import { IconArrow, IconCamera, IconPhoto, IconX } from './icons'
 
 const MAX_EXTRAS = 5
@@ -58,6 +60,7 @@ export function StartScreen({ busy, error, onStart }: {
   }
 
   return (
+    <>
     <section aria-labelledby="start-title" className="grid gap-4 py-6 lg:grid-cols-2 lg:items-center lg:gap-8">
       <div className="space-y-3">
         <p className="font-mono text-footnote uppercase tracking-widest text-accent-text">Photo in · anatomy out</p>
@@ -159,5 +162,11 @@ export function StartScreen({ busy, error, onStart }: {
         </button>
       </form>
     </section>
+    <div className="pb-6">
+      <h3 className="text-headline">No photo handy? Open an example.</h3>
+      <Samples heading={false} onStart={onStart} busy={busy} error={null} />
+      <Examples heading={false} />
+    </div>
+    </>
   )
 }

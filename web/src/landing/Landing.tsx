@@ -1,7 +1,9 @@
 import type { SVGProps } from 'react'
 import { IconArrow } from '../ui/icons'
 import { BlueprintSheet } from './BlueprintSheet'
+import { Examples } from './Examples'
 import { Hero } from './Hero'
+import { Samples } from './Samples'
 import './landing.css'
 
 const STEPS = [
@@ -17,7 +19,7 @@ const MARKS = [
   ['Hidden', 'inferred', 'Nothing shows it, so Magneye reasons it out from how this kind of object is built. Treat it as an informed guess.', <svg key="h" {...mark({})}><circle cx="12" cy="12" r="8" strokeDasharray="3 3" /></svg>],
 ] as const
 
-export function Landing() {
+export function Landing({ onStart, busy, error }: { onStart: (photo: Blob, prompt: string, extras: Blob[]) => void; busy: boolean; error: string | null }) {
   return (
     <div className="lp">
       <Hero />
@@ -48,6 +50,9 @@ export function Landing() {
         <p className="lp-sub">Switch to Blueprint for front, top and right views, hidden parts dashed, dimensions and a parts list. Edit a part there and the 3D view follows.</p>
         <BlueprintSheet />
       </section>
+
+      <Samples onStart={onStart} busy={busy} error={error} />
+      <Examples />
 
       <section className="lp-sec" aria-labelledby="lp-cta-title">
         <div className="lp-cta glass edge">
