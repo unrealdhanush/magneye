@@ -36,6 +36,8 @@ MIN_IN_VIEW = 0.35
 # view) from the photo's viewpoint may be drafted on the wrong side.
 SHOWN_IN_VIEW = 0.6
 MIN_SHOWN = 0.015
+# Real reference views shown beside the renders.
+MAX_REFS = 3
 PART_DEFAULTS: dict[str, Any] = {
     "name": "New part", "kind": "exterior", "function": "", "material": "plastic", "shape": "rounded_box",
     "size_mm": [10, 10, 10], "center_mm": [0, 0, 0], "rotation_deg": [0, 0, 0], "layer": 0, "sam_prompt": None,
@@ -48,7 +50,7 @@ The renders show the finished model: outer parts in their colours, and every int
 - The shell is too small or the wrong shape for what it holds: make it the real size (place_parts size_mm) or give it the real form (model_parts).
 - The real object has a housing, cover or body section the model lacks (a top housing under a faceplate, a back cover, the body joining a handle to a head): add it with add_part, sized and placed to close the gap, with a recipe in the same call when its shape matters.
 - The internal part is drafted too big or in the wrong place: give it its real size and position.
-A part listed as trimmed was cut down to fit inside the shell: the same causes apply. A part listed as floating doesn't touch the body: in the real object every outer part is joined to it (a ring is moulded to the head, a button sits in its plate, the head runs into the grip), so close the gap the way the real object does: move it, extend it, or reshape the part between. A part listed as hidden is in plain sight in the photo but covered by another part from the photo's viewpoint: the two are in the wrong order front to back (a ring drafted in front of the buttons it arcs behind), so move or turn the one that is wrong until the photo's view of the model shows what the photo shows. Parts listed as reaching past the object make the model bigger than the real one, whose size was measured from the photo: shorten or move them back inside it. You also get how far each control (a button, stick, dial or key) stands out of the body under it: make it stand out as far as the real one does, set into its surface rather than sitting on top of it. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
+A part listed as trimmed was cut down to fit inside the shell: the same causes apply. A part listed as floating doesn't touch the body: in the real object every outer part is joined to it (a ring is moulded to the head, a button sits in its plate, the head runs into the grip), so close the gap the way the real object does: move it, extend it, or reshape the part between. A part listed as hidden is in plain sight in the photo but covered by another part from the photo's viewpoint: the two are in the wrong order front to back (a ring drafted in front of the buttons it arcs behind), so move or turn the one that is wrong until the photo's view of the model shows what the photo shows. Parts listed as reaching past the object make the model bigger than the real one, whose size was measured from the photo: shorten or move them back inside it. You also get how far each control (a button, stick, dial or key) stands out of the body under it: make it stand out as far as the real one does, set into its surface rather than sitting on top of it. Also fix outer parts that float apart from the body or stick out where the real object is smooth, and compare the whole model with the photos: check where each outer part joins the body against the real views, not only that it touches (which edge a ring or handle springs from, what a panel sits in), and at a glance it should read as the same object, with the same proportions and the same smooth, moulded forms. Give every outer part you add a recipe in its real shape (a loft through its cross-sections, or a blend, so it is rounded, tapers and joins its neighbours without steps); without one it is a plain rounded box. Reshape blocky outer parts the same way with model_parts.
 
 Positions and sizes are millimetres in the object's own frame (x its right, y up, z out of its front); a part's size_mm is in its own frame before its rotation_deg. After your edits the parts are fitted together again (what you placed stays put, the rest gives way) and you get the new renders.
 
@@ -287,21 +289,34 @@ def views(anatomy: dict[str, Any]) -> list[tuple[str, tuple[float, float, float]
             ("behind on its right", (135, 25, 0)), ("above", (0, 89, 0)), ("below", (0, -89, 0))]
 
 
-def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], side: dict[str, Any] | None = None
+def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], refs: list[dict[str, Any]] | None = None
           ) -> tuple[bytes, list[str], list[str]]:
-    """The review sheet (the photo, then the model from eight sides with what shows through marked), the flaws, and
+    """The review sheet (the photo and the real reference views, then the model from eight sides with what shows
+    through marked), the flaws, and
     measurements for Muse to judge against the real object (how far the controls stand out)."""
     solids, trimmed = assembled(anatomy)
     tiles, seen = [], {}
     im = Image.open(io.BytesIO(photo)).convert("RGB")
     pad = 0.08 * max(box[2] - box[0], box[3] - box[1])
-    crop = im.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad)))
-    crop.thumbnail((TILE, TILE))
-    tiles.append(("The photo", crop))
-    if side is not None:
-        ref = Image.open(io.BytesIO(side["jpeg"])).convert("RGB")
+    crop_box = (max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad))
+    crop = im.crop(crop_box)
+    tiles.append(("The photo", crop.copy()))
+    tiles[-1][1].thumbnail((TILE, TILE))
+    # The outer parts drawn over the photo through its viewpoint: a part in the wrong place shows as colour over the
+    # background or the real part left bare beside it.
+    outer = {p["id"]: solids[p["id"]] for p in anatomy["parts"] if p["kind"] == "exterior" and p["id"] in solids}
+    flat = {"object": anatomy["object"], "parts": [
+        {**p, "center_mm": [0, 0, 0], "rotation_deg": [0, 0, 0],
+         "size_mm": [max(b[3 + i] - b[i], 1e-6) for i in range(3)]}
+        for p in anatomy["parts"] if p["id"] in outer for b in [outer[p["id"]].bounding_box()]]}
+    over = M.overlay(flat, outer, im, box).crop(crop_box)
+    over.thumbnail((TILE, TILE))
+    tiles.append(("The model over the photo", over))
+    # The other real views show what the photo can't: how parts join round the far side, what the back looks like.
+    for r in (refs or [])[:MAX_REFS]:
+        ref = Image.open(io.BytesIO(r["jpeg"])).convert("RGB")
         ref.thumbnail((TILE, TILE))
-        tiles.append((f"Real photo: {side.get('view', 'side').replace('_', ' ')}", ref))
+        tiles.append((f"Real photo: {(r.get('view') or 'other view').replace('_', ' ')}", ref))
     in_photo = frozenset(p["id"] for p in anatomy["parts"] if p["kind"] == "exterior" and p.get("sam_prompt"))
     # Parts with no SAM prompt aren't in the photo (those seen only in reference views have none either).
     unseen = frozenset(p["id"] for p in anatomy["parts"] if p["kind"] == "exterior" and not p.get("sam_prompt"))
@@ -338,13 +353,15 @@ def sheet(anatomy: dict[str, Any], photo: bytes, box: list[float], side: dict[st
 
 
 async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emit: Emit, model_id: str,
-                 side: dict[str, Any] | None = None, inside: list[dict[str, Any]] | None = None) -> list[str]:
-    """Let Muse fix its own design from renders of the finished model. Mutates `anatomy`; returns the flaws left."""
+                 refs: list[dict[str, Any]] | None = None, inside: list[dict[str, Any]] | None = None,
+                 feedback: str | None = None) -> list[str]:
+    """Let Muse fix its own design from renders of the finished model, and from what the user says is wrong with it
+    (`feedback`) when they have looked at it. Mutates `anatomy`; returns the flaws left."""
     parts = {p["id"]: p for p in anatomy["parts"]}
     state: dict[str, Any] = {}
 
     def look() -> tuple[list[dict[str, Any]], list[str]]:
-        image, flaws, notes = sheet(anatomy, photo, box, side)
+        image, flaws, notes = sheet(anatomy, photo, box, refs)
         state["flaws"] = flaws
         text = ("Flaws: " + "; ".join(flaws)) if flaws else "No internal part shows from outside and none was trimmed."
         clashes = _clashes(anatomy)
@@ -456,7 +473,9 @@ async def review(*, anatomy: dict[str, Any], photo: bytes, box: list[float], emi
         {"role": "system", "content": REVIEW_SYSTEM},
         {"role": "user", "content": [meta.image_part(photo), *photos, {"type": "text", "text":
             f"Object: {anatomy['object']['name']}, {anatomy['object']['dimensions_mm']} mm.\nParts: {json.dumps(brief)}\n"
-            + (f"\nResearch notes:\n{research[:6000]}\n" if research else "") + "\nThe finished model:"}, *attach]},
+            + (f"\nResearch notes:\n{research[:6000]}\n" if research else "")
+            + (f"\nThe user has looked at the model and says: “{feedback}”. Fix that first, the way the real object is "
+               "built, then the rest.\n" if feedback else "") + "\nThe finished model:"}, *attach]},
     ]
     await run_loop(agent="builder", model=model_id, messages=messages, tools=one_at_a_time(tools), emit=emit, max_turns=5,
                    reasoning_effort="medium", until="finish", max_tokens=24000)

@@ -377,7 +377,7 @@ async def build(
     # Then Muse looks at the finished model as the user will, from every side, and fixes what shows it is wrong.
     try:
         left = await review.review(anatomy=work, photo=image, box=frame.box, emit=emit, model_id=model,
-                                   side=found_side[0], inside=inside)
+                                   refs=[v for v in [found_side[0], *picked] if v and v.get("jpeg")], inside=inside)
         if left:
             await emit({"type": "step", "agent": "builder", "tool": "review", "status": "done",
                         "text": f"Reviewed; {_count(len(left), 'flaw', 'flaws')} left: " + "; ".join(f.split(" shows")[0].split(" was")[0] for f in left)})

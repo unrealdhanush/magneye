@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -28,6 +29,27 @@ USAGE: list[dict[str, Any]] = []
 
 class MetaAPIError(RuntimeError):
     pass
+
+
+# An overloaded or briefly unreachable API is retried after these pauses (seconds) before the call fails.
+RETRY_AFTER_S = (2.0, 6.0, 15.0)
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+async def _post(path: str, body: dict[str, Any]) -> httpx.Response:
+    """POST a JSON body, retrying the brief failures a long build would otherwise die on."""
+    for pause in (*RETRY_AFTER_S, None):
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                r = await client.post(f"{BASE_URL}{path}", headers=_headers(), json=body)
+        except httpx.TransportError:
+            if pause is None:
+                raise
+        else:
+            if r.status_code not in RETRY_STATUS or pause is None:
+                return r
+        await asyncio.sleep(pause)
+    raise AssertionError("unreachable")
 
 
 def _key() -> str:
@@ -70,8 +92,7 @@ async def chat_json(
         "reasoning_effort": reasoning_effort,
         "max_completion_tokens": max_tokens,
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        r = await client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=body)
+    r = await _post("/chat/completions", body)
     if r.status_code >= 400:
         raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
     USAGE.append({"model": model, **(r.json().get("usage") or {})})
@@ -105,8 +126,7 @@ async def chat(
         "reasoning_effort": reasoning_effort,
         "max_completion_tokens": max_tokens,
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        r = await client.post(f"{BASE_URL}/chat/completions", headers=_headers(), json=body)
+    r = await _post("/chat/completions", body)
     if r.status_code >= 400:
         raise MetaAPIError(f"chat/completions {r.status_code}: {r.text[:500]}")
     USAGE.append({"model": model, **(r.json().get("usage") or {})})
@@ -128,8 +148,7 @@ async def research(*, model: str, image_jpeg: bytes, instructions: str, question
         "include": ["web_search_call.results"],
         "reasoning": {"effort": reasoning_effort},
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        r = await client.post(f"{BASE_URL}/responses", headers=_headers(), json=body)
+    r = await _post("/responses", body)
     if r.status_code >= 400:
         raise MetaAPIError(f"responses {r.status_code}: {r.text[:500]}")
     data = r.json()
@@ -239,8 +258,7 @@ async def edit_image(jpeg: bytes, prompt: str, *, model: str = "muse-image-1.0",
     }
     if size:
         body["size"] = f"{size[0]}x{size[1]}"
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        r = await client.post(f"{BASE_URL}/images/edits", headers=_headers(), json=body)
+    r = await _post("/images/edits", body)
     if r.status_code >= 400:
         raise MetaAPIError(f"images/edits {r.status_code}: {r.text[:500]}")
     item = (r.json().get("data") or [{}])[0]

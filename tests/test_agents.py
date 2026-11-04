@@ -491,3 +491,16 @@ def test_the_review_reports_outer_parts_reaching_past_the_object():
                "parts": [part("head", [0, 30, 0], [40, 40, 30]), part("grip", [0, -30, 0], [30, 100, 30])]}
     solids, _ = R.assembled(anatomy)
     assert R._oversize(anatomy, solids) == ["grip (30 mm) reach past the object's bottom: it is 100 mm tall"]
+
+
+def test_an_overloaded_api_call_is_retried(monkeypatch):
+    import httpx
+    answers = [httpx.Response(503, json={"error": "overloaded"}), httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})]
+
+    async def post(self, url, **kw):
+        return answers.pop(0)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    monkeypatch.setattr(meta, "RETRY_AFTER_S", (0.0, 0.0, 0.0))
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    message = asyncio.run(meta.chat(model="m", messages=[], tools=[]))
+    assert message["content"] == "hi" and not answers
