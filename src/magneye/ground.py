@@ -92,9 +92,16 @@ async def object_frame(cache: SegmentCache, anatomy: dict[str, Any]) -> tuple[Fr
     return None
 
 
+# A part match covering this much of the object's box is the object itself (SAM answering "joystick" with the whole
+# controller), not one of its parts.
+MAX_PART_SHARE = 0.6
+
+
 def part_matches(frame: Frame, target: dict[str, Any], matches: Matches) -> Matches:
-    """Matches whose centre lies on the object, excluding the object's own mask."""
-    return [m for m in matches if _inside(_center(m["box"]), frame.box) and m["box"] != target["box"]]
+    """Matches whose centre lies on the object, excluding the object's own mask and anything nearly as big."""
+    whole = max(_area(target["box"]), 1e-6)
+    return [m for m in matches if _inside(_center(m["box"]), frame.box)
+            and _area(_overlap(m["box"], target["box"])) / whole < MAX_PART_SHARE]
 
 
 async def ground(image: bytes, size: tuple[int, int], anatomy: dict[str, Any],
@@ -167,6 +174,10 @@ def _full_frame_png(match: dict[str, Any], size: tuple[int, int]) -> bytes:
     out = io.BytesIO()
     frame.save(out, "PNG")
     return out.getvalue()
+
+
+def _overlap(a: list[float], b: list[float]) -> list[float]:
+    return [max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])]
 
 
 def _area(box: list[float]) -> float:

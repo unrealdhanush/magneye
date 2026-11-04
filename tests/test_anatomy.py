@@ -110,3 +110,22 @@ def test_geometry_flags_joined_parts_that_dont_touch_and_honours_rotation():
     near = {**led, "center_mm": [0, 23.5, 0]}
     issues = geometry_issues({**anatomy, "parts": [board, cable, near]})
     assert not any("cable and led" in i or "board and cable" in i for i in issues)
+
+
+def test_ground_ignores_a_part_match_that_is_the_whole_object(monkeypatch):
+    # SAM answers "thumbstick" with the controller itself, a pixel off the object's own box.
+    anatomy = {"object": {"sam_prompt": "controller", "dimensions_mm": [100, 200, 50]},
+               "parts": [_part("stick", center=(10, 60, 20), size=(12, 12, 8), sam="thumbstick")]}
+
+    def match(box):
+        w, h = int(box[2] - box[0]), int(box[3] - box[1])
+        return {"object_id": "1", "box": box, "confidence": 0.9, "mask_bounds": box, "mask_size": [w, h],
+                "mask_svg": "M0 0Z", "coverage": 1.0, "raster": bytes([1]) * (w * h)}
+
+    async def fake_segment(_image, phrase):
+        return [match([100, 100, 300, 500])] if phrase == "controller" else [match([99, 100, 300, 501])]
+
+    monkeypatch.setattr(G.meta, "segment", fake_segment)
+    g = asyncio.run(G.ground(b"", (400, 600), anatomy))
+    stick = anatomy["parts"][0]
+    assert "stick" not in g["parts"] and not stick.get("grounded") and stick["center_mm"] == [10, 60, 20]

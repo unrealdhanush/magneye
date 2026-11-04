@@ -409,7 +409,7 @@ def test_the_review_marks_inner_parts_that_show_through():
                "parts": [part("shell", "exterior", [0, 0, 0], [40, 80, 40]), part("main_pcb", "internal", [0, 0, 0], [60, 50, 4])]}
     photo = io.BytesIO()
     Image.new("RGB", (200, 200), "white").save(photo, "JPEG")
-    _, flaws = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
+    _, flaws, _ = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
     assert any(f.startswith("main_pcb shows through") for f in flaws)
 
 
@@ -454,7 +454,40 @@ def test_the_review_reports_a_part_seen_in_the_photo_but_hidden_in_the_model():
                          part("ring", [0, 0, 20], [60, 60, 6], "ring")]}
     photo = io.BytesIO()
     Image.new("RGB", (200, 200), "white").save(photo, "JPEG")
-    _, flaws = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
+    _, flaws, _ = R.sheet(anatomy, photo.getvalue(), [20, 20, 180, 180])
     hidden = [f for f in flaws if "hidden behind" in f]
     assert any(f.startswith("buttons is in plain sight") and "behind ring" in f for f in hidden)
     assert not any(f.startswith("ring ") for f in hidden)
+
+
+def test_a_modelled_part_keeps_its_form_when_its_size_lists_the_axes_in_another_order():
+    from magneye import assembly
+    cap = {"id": "cap", "name": "cap", "kind": "exterior", "material": "plastic", "shape": "cylinder", "center_mm": [0, 0, 0],
+           "size_mm": [18, 10, 18], "rotation_deg": [0, 0, 0], "layer": 1,
+           "model": {"op": "cylinder", "d": 18, "h": 10, "axis": "z"}}
+    assert assembly.keep_form(cap) and cap["size_mm"] == [18, 18, 10]
+    # A real resize (the cap made taller) is the user's to make.
+    tall = {**cap, "size_mm": [18, 18, 30]}
+    assert not assembly.keep_form(tall) and tall["size_mm"] == [18, 18, 30]
+
+
+def test_the_review_measures_how_far_a_control_stands_out_of_the_body():
+    from magneye import review as R
+    part = lambda pid, c, s, **kw: {"id": pid, "name": pid, "kind": "exterior", "material": "plastic", "shape": "box", "center_mm": c,
+                                    "size_mm": s, "rotation_deg": [0, 0, 0], "layer": 1, **kw}
+    # A 4 mm button whose base sits 6 mm in front of a plate's face (z 5): its top is 10 mm out.
+    anatomy = {"object": {"name": "x", "dimensions_mm": [60, 60, 30], "camera": {}},
+               "parts": [part("plate", [0, 0, 0], [40, 40, 10]), part("button", [0, 0, 13], [10, 10, 4], faces="+z")]}
+    solids, _ = R.assembled(anatomy)
+    assert R._proud(anatomy, solids) == ["button stands 10 mm out of the body"]
+
+
+def test_the_review_reports_outer_parts_reaching_past_the_object():
+    from magneye import review as R
+    part = lambda pid, c, s: {"id": pid, "name": pid, "kind": "exterior", "material": "plastic", "shape": "box", "center_mm": c,
+                              "size_mm": s, "rotation_deg": [0, 0, 0], "layer": 1}
+    # A 100 mm tall object whose grip runs down to y -80: 30 mm past its bottom.
+    anatomy = {"object": {"name": "x", "dimensions_mm": [40, 100, 40], "camera": {}},
+               "parts": [part("head", [0, 30, 0], [40, 40, 30]), part("grip", [0, -30, 0], [30, 100, 30])]}
+    solids, _ = R.assembled(anatomy)
+    assert R._oversize(anatomy, solids) == ["grip (30 mm) reach past the object's bottom: it is 100 mm tall"]

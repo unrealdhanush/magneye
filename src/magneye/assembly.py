@@ -317,6 +317,31 @@ def apply_mould(part: dict[str, Any], by_id: dict[str, dict[str, Any]], spec: di
     return None
 
 
+def keep_form(part: dict[str, Any]) -> bool:
+    """A modelled part whose size lists its recipe's extents in another axis order (a stick cap 10 mm tall along z
+    given as 10 mm along y) would be stretched into a different shape: put the sizes back on the axes the recipe
+    has them on. Real resizes, which change the extents themselves, are left alone. True if the size changed."""
+    if not part.get("model") or part.get("mould"):
+        return False
+    try:
+        b = M.build(part["model"]).bounding_box()
+    except Exception:
+        return False
+    span = [b[3 + i] - b[i] for i in range(3)]
+    size = list(part["size_mm"])
+    if min(span) <= 0 or all(0.75 < size[i] / span[i] < 1.33 for i in range(3)):
+        return False
+    # The same extents in another order: each sorted size within the tolerance of the matching sorted span.
+    by_span, by_size = sorted(range(3), key=lambda i: span[i]), sorted(range(3), key=lambda i: size[i])
+    if not all(0.8 < size[by_size[k]] / span[by_span[k]] < 1.25 for k in range(3)):
+        return False
+    out = [0.0] * 3
+    for k in range(3):
+        out[by_span[k]] = size[by_size[k]]
+    part["size_mm"] = out
+    return True
+
+
 def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozenset()) -> list[str]:
     """Make the parts fit together without sharing space: holders get pockets for what they hold (recorded in
     "cuts"), peers are pushed apart. `pinned` parts (the ones the user just placed) never move: what collides with
@@ -327,8 +352,8 @@ def resolve(anatomy: dict[str, Any], pinned: frozenset[str] | set[str] = frozens
     for p in parts:
         if p.get("mould"):
             apply_mould(p, by_id)
+    changes: list[str] = [f"{p['id']} keeps its modelled form" for p in parts if keep_form(p)]
     own = {p["id"]: _solid(p) for p in parts}
-    changes: list[str] = []
     for p in parts:
         p.pop("cuts", None)
     # Inner parts are brought inside the object first, so the pushes start from a layout that fits in it.
